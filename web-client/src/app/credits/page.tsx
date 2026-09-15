@@ -165,13 +165,20 @@ export default function CreditsPage() {
 
     try {
       setAssigning(true)
-      await postJson(`${SERVER_URL}/platform/credit/user`, {
-        username: assignForm.username.trim(),
-        api_credit_group: assignForm.credit_group.trim(),
-        tier_name: assignForm.tier_name.trim(),
-        available_credits: assignForm.credits || undefined
+      const username = assignForm.username.trim()
+      const current = userRows.find(u => u.username === username) || await getJson<any>(`${SERVER_URL}/platform/credit/${encodeURIComponent(username)}`).catch(() => ({}))
+      const currentCredits = current.users_credits || {}
+
+      await postJson(`${SERVER_URL}/platform/credit/${encodeURIComponent(username)}`, {
+        users_credits: {
+          ...currentCredits,
+          [assignForm.credit_group.trim()]: {
+            tier_name: assignForm.tier_name.trim(),
+            available_credits: assignForm.credits || 0
+          }
+        }
       })
-      
+
       setUserSuccess(`Credits assigned to ${assignForm.username}`)
       setShowAssignModal(false)
       setAssignForm({ username: '', credit_group: '', tier_name: '', credits: 0 })
@@ -187,7 +194,14 @@ export default function CreditsPage() {
     if (!confirm(`Remove ${username} from credit group "${creditGroup}"?`)) return
 
     try {
-      await delJson(`${SERVER_URL}/platform/credit/user/${encodeURIComponent(username)}/${encodeURIComponent(creditGroup)}`)
+      const current = userRows.find(u => u.username === username) || await getJson<any>(`${SERVER_URL}/platform/credit/${encodeURIComponent(username)}`).catch(() => ({}))
+      const currentCredits = { ...(current.users_credits || {}) }
+      delete currentCredits[creditGroup]
+
+      await postJson(`${SERVER_URL}/platform/credit/${encodeURIComponent(username)}`, {
+        users_credits: currentCredits
+      })
+
       setUserSuccess(`Removed ${username} from ${creditGroup}`)
       await loadAllUserTokens()
     } catch (e: any) {
@@ -350,12 +364,12 @@ export default function CreditsPage() {
         <div className="fixed inset-0 z-50 overflow-y-auto">
           <div className="flex items-center justify-center min-h-screen px-4">
             <div className="fixed inset-0 bg-black/50" onClick={() => setShowAssignModal(false)} />
-            
+
             <div className="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
                 Assign Credits to User
               </h3>
-              
+
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -369,7 +383,7 @@ export default function CreditsPage() {
                     restrictToOptions
                   />
                 </div>
-                
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Credit Group *
@@ -385,7 +399,7 @@ export default function CreditsPage() {
                   Select from available credit definitions
                 </p>
               </div>
-                
+
                 {assignForm.credit_group && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -416,7 +430,7 @@ export default function CreditsPage() {
                     </select>
                   </div>
                 )}
-                
+
                 {assignForm.tier_name && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -435,7 +449,7 @@ export default function CreditsPage() {
                   </div>
                 )}
               </div>
-              
+
               <div className="flex gap-2 mt-6">
                 <button
                   onClick={handleAssignCredits}

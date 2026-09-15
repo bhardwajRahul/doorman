@@ -156,7 +156,7 @@ export default function LogsPage() {
       const { fetchJson } = await import('@/utils/http')
       const responseData: any = await fetchJson(`${SERVER_URL}/platform/endpoint/${encodeURIComponent(api_name)}/${encodeURIComponent(api_version)}`)
       const data = responseData
-      const eps: any[] = data.endpoints || []
+      const eps: any[] = Array.isArray(data) ? data : (data.endpoints || data.response?.endpoints || [])
       const next: Record<OverrideKey, boolean> = {}
       eps.forEach(ep => {
         const k: OverrideKey = `${ep.endpoint_method}|${ep.api_name}|${ep.api_version}|${ep.endpoint_uri}`

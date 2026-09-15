@@ -5,8 +5,9 @@ use std::{
 
 use futures_util::TryStreamExt;
 use mongodb::{
-    Client, Database,
+    Client, Database, IndexModel,
     bson::{Document, doc},
+    options::IndexOptions,
 };
 use redis::{AsyncCommands, aio::ConnectionManager};
 use serde_json::Value;
@@ -46,6 +47,19 @@ pub enum StorageError {
     #[error("invalid stored document: {0}")]
     InvalidDocument(String),
 }
+impl StorageError {
+    pub fn is_duplicate_key(&self) -> bool {
+        matches!(self, Self::Mongo(error) if error.to_string().contains("E11000"))
+    }
+}
+
+fn restored_document(value: &Value) -> Result<Document, StorageError> {
+    let object = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| StorageError::InvalidDocument("expected stored object".to_owned()))?;
+    Document::try_from(object).map_err(|error| StorageError::InvalidDocument(error.to_string()))
+}
 
 pub struct GatewayMetric<'a> {
     pub minute_start: u64,
@@ -77,6 +91,7 @@ impl SharedStorage {
         let redis_client = redis::Client::open(config.redis_url())?;
         let mut redis = ConnectionManager::new(redis_client).await?;
         let _: String = redis::cmd("PING").query_async(&mut redis).await?;
+        Self::ensure_indexes(&mongo).await?;
         Ok(Self {
             mongo: Some(mongo),
             redis: Some(redis),
@@ -86,6 +101,45 @@ impl SharedStorage {
         })
     }
 
+    async fn ensure_indexes(database: &Database) -> Result<(), StorageError> {
+        let indexes = [
+            ("users", doc! {"username": 1}),
+            ("users", doc! {"email": 1}),
+            ("roles", doc! {"role_name": 1}),
+            ("groups", doc! {"group_name": 1}),
+            ("apis", doc! {"api_name": 1, "api_version": 1}),
+            (
+                "endpoints",
+                doc! {
+                    "api_name": 1,
+                    "api_version": 1,
+                    "endpoint_method": 1,
+                    "endpoint_uri": 1
+                },
+            ),
+            ("subscriptions", doc! {"username": 1}),
+            ("routings", doc! {"client_key": 1}),
+            ("credit_defs", doc! {"api_credit_group": 1}),
+            ("user_credits", doc! {"username": 1}),
+            ("tiers", doc! {"tier_name": 1}),
+            ("user_tier_assignments", doc! {"user_id": 1}),
+            ("vault_entries", doc! {"username": 1, "key_name": 1}),
+            ("config_snapshots", doc! {"snapshot_id": 1}),
+            ("revocations", doc! {"type": 1, "username": 1, "jti": 1}),
+        ];
+        for (collection, keys) in indexes {
+            database
+                .collection::<Document>(collection)
+                .create_index(
+                    IndexModel::builder()
+                        .keys(keys)
+                        .options(IndexOptions::builder().unique(true).build())
+                        .build(),
+                )
+                .await?;
+        }
+        Ok(())
+    }
     pub async fn initialize_core(&self) -> Result<(), StorageError> {
         let admin_role = serde_json::json!({
             "role_name": "admin", "role_description": "Administrator role",
@@ -576,7 +630,7 @@ impl SharedStorage {
                 .cloned()
                 .collect());
         }
-        let filter = mongodb::bson::to_document(filter)?;
+        let filter = restored_document(filter)?;
         let mut cursor = self
             .mongo()?
             .collection::<Document>(collection)
@@ -601,7 +655,7 @@ impl SharedStorage {
                 .and_then(|items| items.iter().find(|item| value_matches(item, filter)))
                 .cloned());
         }
-        let filter = mongodb::bson::to_document(filter)?;
+        let filter = restored_document(filter)?;
         self.mongo()?
             .collection::<Document>(collection)
             .find_one(filter)
@@ -662,7 +716,7 @@ impl SharedStorage {
             self.invalidate_policy_cache().await;
             return Ok(Some(result));
         }
-        let filter_document = mongodb::bson::to_document(filter)?;
+        let filter_document = restored_document(filter)?;
         let mut update_document = mongodb::bson::to_document(updates)?;
         update_document.remove("_id");
         let result = self
@@ -700,13 +754,52 @@ impl SharedStorage {
         let result = self
             .mongo()?
             .collection::<Document>(collection)
-            .delete_one(mongodb::bson::to_document(filter)?)
+            .delete_one(restored_document(filter)?)
             .await?;
         if result.deleted_count > 0 {
             self.bump_policy_revision().await?;
             self.invalidate_policy_cache().await;
         }
         Ok(result.deleted_count > 0)
+    }
+
+    /// Remove expired per-token revocations while retaining non-expiring
+    /// revoke-all records.  This deliberately lives in the storage layer so
+    /// the memory and MongoDB backends have identical cleanup semantics.
+    pub async fn purge_expired_revocations(&self, now_seconds: u64) -> Result<u64, StorageError> {
+        if let Some(memory) = &self.memory {
+            let mut collections = memory.collections.write().await;
+            let records = collections.entry("revocations".to_owned()).or_default();
+            let before = records.len();
+            records.retain(|record| {
+                let expired_jti = record.get("type").and_then(Value::as_str) == Some("jti")
+                    && record
+                        .get("expires_at")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|expires_at| expires_at <= now_seconds);
+                !expired_jti
+            });
+            let removed = (before - records.len()) as u64;
+            if removed > 0 {
+                memory.bump_revision();
+                self.invalidate_policy_cache().await;
+            }
+            return Ok(removed);
+        }
+
+        let result = self
+            .mongo()?
+            .collection::<Document>("revocations")
+            .delete_many(doc! {
+                "type": "jti",
+                "expires_at": { "$lte": now_seconds as i64 },
+            })
+            .await?;
+        if result.deleted_count > 0 {
+            self.bump_policy_revision().await?;
+            self.invalidate_policy_cache().await;
+        }
+        Ok(result.deleted_count)
     }
 
     pub async fn replace_collection(
@@ -729,13 +822,167 @@ impl SharedStorage {
         if !values.is_empty() {
             let documents = values
                 .iter()
-                .map(mongodb::bson::to_document)
+                .map(restored_document)
                 .collect::<Result<Vec<_>, _>>()?;
             target.insert_many(documents).await?;
         }
         self.bump_policy_revision().await?;
         self.invalidate_policy_cache().await;
         Ok(())
+    }
+
+    /// Replace a related set of collections as one configuration change.
+    ///
+    /// MongoDB deployments must provide transaction support (a replica set or
+    /// sharded cluster).  Failing that precondition is safer than partially
+    /// applying a configuration import or rollback.
+    pub async fn replace_collections_atomically(
+        &self,
+        replacements: &[(String, Vec<Value>)],
+        snapshot: Option<Value>,
+    ) -> Result<(), StorageError> {
+        if let Some(memory) = &self.memory {
+            let mut collections = memory.collections.write().await;
+            if let Some(snapshot) = snapshot {
+                collections
+                    .entry("config_snapshots".to_owned())
+                    .or_default()
+                    .push(snapshot);
+            }
+            for (collection, values) in replacements {
+                collections.insert(collection.clone(), values.clone());
+            }
+            memory.bump_revision();
+            self.invalidate_policy_cache().await;
+            return Ok(());
+        }
+
+        let database = self.mongo()?;
+        let documents = replacements
+            .iter()
+            .map(|(collection, values)| {
+                values
+                    .iter()
+                    .map(restored_document)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|documents| (collection.as_str(), documents))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let snapshot = snapshot
+            .map(|value| restored_document(&value))
+            .transpose()?;
+        let mut session = database.client().start_session().await?;
+        session.start_transaction().await?;
+
+        let result: Result<(), StorageError> = async {
+            if let Some(snapshot) = snapshot.as_ref() {
+                database
+                    .collection::<Document>("config_snapshots")
+                    .insert_one(snapshot)
+                    .session(&mut session)
+                    .await?;
+            }
+            for (collection, values) in &documents {
+                let target = database.collection::<Document>(collection);
+                target.delete_many(doc! {}).session(&mut session).await?;
+                if !values.is_empty() {
+                    target.insert_many(values).session(&mut session).await?;
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            let _ = session.abort_transaction().await;
+            return Err(error);
+        }
+        session.commit_transaction().await?;
+        self.bump_policy_revision().await?;
+        self.invalidate_policy_cache().await;
+        Ok(())
+    }
+
+    /// Capture the rollback snapshot and merge the import under one memory
+    /// lock or MongoDB transaction, including reads of the current documents.
+    pub async fn import_configuration_atomically(
+        &self,
+        payload: &Value,
+        mut snapshot: Value,
+    ) -> Result<Value, StorageError> {
+        use super::configuration::{COLLECTIONS, merge_import};
+        if let Some(memory) = &self.memory {
+            let mut collections = memory.collections.write().await;
+            let mut current = COLLECTIONS
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.to_owned(),
+                        collections.get(name).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            snapshot["data"] = serde_json::to_value(&current)?;
+            let counts = merge_import(&mut current, payload)?;
+            collections.extend(current);
+            collections
+                .entry("config_snapshots".to_owned())
+                .or_default()
+                .push(snapshot);
+            memory.bump_revision();
+            drop(collections);
+            self.invalidate_policy_cache().await;
+            return Ok(counts);
+        }
+
+        let database = self.mongo()?;
+        let mut session = database.client().start_session().await?;
+        session.start_transaction().await?;
+        let result: Result<Value, StorageError> = async {
+            let mut current = std::collections::HashMap::new();
+            for name in COLLECTIONS {
+                let mut cursor = database
+                    .collection::<Document>(name)
+                    .find(doc! {})
+                    .session(&mut session)
+                    .await?;
+                let mut documents = Vec::new();
+                while let Some(document) = cursor.stream(&mut session).try_next().await? {
+                    documents.push(serde_json::to_value(document)?);
+                }
+                current.insert(name.to_owned(), documents);
+            }
+            snapshot["data"] = serde_json::to_value(&current)?;
+            let counts = merge_import(&mut current, payload)?;
+            database
+                .collection::<Document>("config_snapshots")
+                .insert_one(restored_document(&snapshot)?)
+                .session(&mut session)
+                .await?;
+            for name in COLLECTIONS {
+                let target = database.collection::<Document>(name);
+                let documents = current[name]
+                    .iter()
+                    .map(restored_document)
+                    .collect::<Result<Vec<_>, _>>()?;
+                target.delete_many(doc! {}).session(&mut session).await?;
+                if !documents.is_empty() {
+                    target.insert_many(documents).session(&mut session).await?;
+                }
+            }
+            Ok(counts)
+        }
+        .await;
+        let counts = match result {
+            Ok(counts) => counts,
+            Err(error) => {
+                let _ = session.abort_transaction().await;
+                return Err(error);
+            }
+        };
+        session.commit_transaction().await?;
+        self.bump_policy_revision().await?;
+        self.invalidate_policy_cache().await;
+        Ok(counts)
     }
 
     pub async fn crud_find_one(

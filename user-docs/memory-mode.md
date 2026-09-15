@@ -24,7 +24,7 @@ Localhost (docker compose)
 
   - `MEM_ENCRYPTION_KEY=some-strong-secret`
   - Optional: `MEM_AUTO_SAVE_ENABLED=true`
-  - Optional: `MEM_AUTO_SAVE_FREQ=300`  # seconds
+  - Optional: `MEM_AUTO_SAVE_FREQ=900`  # seconds (default when enabled)
 
 - Or override via shell when running `docker compose up`.
 
@@ -39,7 +39,7 @@ AWS ECS (task definition outline)
     - `MEM_ENCRYPTION_KEY=your-strong-key`
     - `MEM_DUMP_PATH=/app/data/memory_dump.bin`
     - `MEM_AUTO_SAVE_ENABLED=true`
-    - `MEM_AUTO_SAVE_FREQ=300`
+    - `MEM_AUTO_SAVE_FREQ=900`
 
 - Ensure your service sends `SIGTERM` on scale-in/stop and allows a short drain period so the dump completes.
 
@@ -48,6 +48,10 @@ Signals / Manual dump
 - SIGTERM / SIGINT: triggers a dump and then shutdown.
 - SIGUSR1: triggers an on-demand dump without terminating.
 - HTTP route (requires auth): `POST /platform/memory/dump` accepts optional `{ "path": "<dir or file>" }`.
+- HTTP restore requires `manage_security`: `POST /platform/memory/restore`
+  accepts `{ "path": "<exact filename returned by dump>" }`. Unlike startup,
+  this route does not search for another backup when the file is missing; it
+  returns 404/MEM003 without replacing current data.
 
 Verification tips
 
@@ -58,4 +62,3 @@ Notes
 
 - Dumps are encrypted (AES-GCM with derived key) using `MEM_ENCRYPTION_KEY`.
 - In multi-worker or HA, use Redis-backed persistence and external databases (MEM mode is single-worker only).
-

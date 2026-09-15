@@ -7,6 +7,76 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn login_rate_limit_ignores_spoofed_forwarding_from_untrusted_peers() {
+    let config = Config::for_test("removed-internal-backend".to_owned());
+    let storage = SharedStorage::connect(&config.shared_storage)
+        .await
+        .unwrap();
+    storage
+        .insert_one(
+            "settings",
+            json!({
+                "type": "security_settings",
+                "trust_x_forwarded_for": true,
+                "xff_trusted_proxies": ["10.0.0.0/8"]
+            }),
+        )
+        .await
+        .unwrap();
+    let mut state = AppState::new(config).unwrap();
+    state.storage = Some(Arc::new(storage));
+    let app = build_router(state);
+    for attempt in 1..=6 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/platform/authorization")
+                    .extension(axum::extract::ConnectInfo(
+                        "198.51.100.91:43210"
+                            .parse::<std::net::SocketAddr>()
+                            .unwrap(),
+                    ))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-forwarded-for", format!("203.0.113.{attempt}"))
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if attempt <= 5 {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+        );
+    }
+    // Requests from a configured proxy use the forwarded address instead.
+    for client in ["203.0.113.10", "203.0.113.11"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/platform/authorization")
+                    .extension(axum::extract::ConnectInfo(
+                        "10.0.0.2:43210".parse::<std::net::SocketAddr>().unwrap(),
+                    ))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-forwarded-for", client)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn login_ip_window_matches_python_error_contract() {
     let mut config = Config::for_test("removed-internal-backend".to_owned());
     config.shared_storage.trust_x_forwarded_for = true;

@@ -39,6 +39,7 @@ pub struct SharedStorageConfig {
     pub token_encryption_key: Option<String>,
     pub trust_x_forwarded_for: bool,
     pub local_host_ip_bypass: bool,
+    pub local_host_ip_bypass_locked: bool,
     pub policy_cache_ttl_seconds: u64,
     pub skip_tier_rate_limit: bool,
 }
@@ -70,6 +71,7 @@ impl SharedStorageConfig {
                 .or_else(|| env_non_empty("MEM_ENCRYPTION_KEY")),
             trust_x_forwarded_for: env_bool("TRUST_X_FORWARDED_FOR", false),
             local_host_ip_bypass: env_bool("LOCAL_HOST_IP_BYPASS", false),
+            local_host_ip_bypass_locked: env_non_empty("LOCAL_HOST_IP_BYPASS").is_some(),
             policy_cache_ttl_seconds: env_parse("GATEWAY_POLICY_CACHE_TTL_SECONDS", 1)?,
             skip_tier_rate_limit: env_bool("SKIP_TIER_RATE_LIMIT", false),
         })
@@ -166,6 +168,7 @@ impl Default for SharedStorageConfig {
             token_encryption_key: None,
             trust_x_forwarded_for: false,
             local_host_ip_bypass: false,
+            local_host_ip_bypass_locked: false,
             policy_cache_ttl_seconds: 1,
             skip_tier_rate_limit: false,
         }
@@ -506,6 +509,7 @@ mod tests {
             token_encryption_key: None,
             trust_x_forwarded_for: false,
             local_host_ip_bypass: false,
+            local_host_ip_bypass_locked: false,
             policy_cache_ttl_seconds: 1,
             skip_tier_rate_limit: false,
         };
@@ -539,6 +543,7 @@ mod tests {
             token_encryption_key: None,
             trust_x_forwarded_for: false,
             local_host_ip_bypass: false,
+            local_host_ip_bypass_locked: false,
             policy_cache_ttl_seconds: 1,
             skip_tier_rate_limit: false,
         };

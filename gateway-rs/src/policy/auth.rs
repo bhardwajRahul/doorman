@@ -32,6 +32,7 @@ pub struct AuthClaims {
     pub role: Option<String>,
     pub exp: Option<usize>,
     pub iss: Option<String>,
+    pub iat: Option<usize>,
     #[serde(deserialize_with = "deserialize_audience")]
     pub aud: Option<Vec<String>>,
 }

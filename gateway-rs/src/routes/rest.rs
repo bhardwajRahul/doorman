@@ -229,9 +229,21 @@ fn apply_tier_headers(
 async fn execute_rest(
     state: &AppState,
     request: Request,
-    decision: crate::policy::PolicyDecision,
+    mut decision: crate::policy::PolicyDecision,
     protocol: DataPlaneProtocol,
 ) -> Result<Response, GatewayError> {
+    if matches!(
+        protocol,
+        DataPlaneProtocol::Rest | DataPlaneProtocol::Graphql | DataPlaneProtocol::Soap
+    ) {
+        let settings = state.hot_reload.http_settings();
+        if let Some(timeout_seconds) = settings.timeout_seconds {
+            decision.request_timeout_ms = timeout_seconds.saturating_mul(1_000);
+        }
+        if let Some(retry_count) = settings.retry_count {
+            decision.retry_count = retry_count;
+        }
+    }
     if let Some(delay_ms) = decision.throttle_delay_ms.filter(|delay| *delay > 0) {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
@@ -539,6 +551,20 @@ async fn execute_rest(
         status,
         decision.response_transform.as_ref(),
     );
+    // GraphQL clients expect execution failures in a valid `errors` envelope,
+    // even when an upstream incorrectly reports that envelope with a 5xx status.
+    // Preserve transport failures and malformed/non-GraphQL responses as errors.
+    let status = if protocol == DataPlaneProtocol::Graphql
+        && status.is_server_error()
+        && serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|body| body.get("errors").and_then(Value::as_array).cloned())
+            .is_some_and(|errors| !errors.is_empty())
+    {
+        StatusCode::OK
+    } else {
+        status
+    };
     let is_json = upstream_headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

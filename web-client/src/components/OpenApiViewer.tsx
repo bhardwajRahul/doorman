@@ -32,7 +32,7 @@ export default function OpenApiViewer({ openapiUrl }: { openapiUrl: string }) {
       setLoading(true)
       setError(null)
       try {
-        const res = await fetch(openapiUrl, { cache: 'no-store' })
+        const res = await fetch(openapiUrl, { cache: 'no-store', credentials: 'include' })
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
         const json = await res.json()
         if (!cancelled) setSpec(json)

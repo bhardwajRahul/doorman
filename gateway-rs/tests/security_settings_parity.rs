@@ -1,17 +1,28 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::{Body, to_bytes};
 use doorman_gateway::{AppState, Config, build_router, storage::runtime::SharedStorage};
 use http::{Method, Request, StatusCode, header};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+use uuid::Uuid;
 
 const ADMIN_EMAIL: &str = "admin@doorman.dev";
-const ADMIN_PASSWORD: &str = "AdminPassword123!";
 const LIMITED_EMAIL: &str = "limited@doorman.dev";
-const LIMITED_PASSWORD: &str = "LimitedPassword123!";
 const MANAGER_EMAIL: &str = "security-manager@doorman.dev";
-const MANAGER_PASSWORD: &str = "SecurityManagerPassword123!";
+fn fixture_password() -> &'static str {
+    static PASSWORD: OnceLock<String> = OnceLock::new();
+    PASSWORD.get_or_init(random_password).as_str()
+}
+
+fn random_password() -> String {
+    let bytes = Uuid::new_v4().into_bytes();
+    let uppercase = char::from(bytes[0] % 26 + b'A');
+    let lowercase = char::from(bytes[1] % 26 + b'a');
+    let digit = char::from(bytes[2] % 10 + b'0');
+    let special = char::from(bytes[3] % 15 + b'!');
+    format!("{uppercase}{lowercase}{digit}{special}{}", Uuid::new_v4())
+}
 
 async fn parity_state() -> AppState {
     let mut config = Config::for_test("removed-internal-backend".to_owned());
@@ -47,12 +58,12 @@ async fn parity_state() -> AppState {
     }
 
     for (username, email, password, role) in [
-        ("admin", ADMIN_EMAIL, ADMIN_PASSWORD, "admin"),
-        ("limited", LIMITED_EMAIL, LIMITED_PASSWORD, "limited"),
+        ("admin", ADMIN_EMAIL, fixture_password(), "admin"),
+        ("limited", LIMITED_EMAIL, fixture_password(), "limited"),
         (
             "security-manager",
             MANAGER_EMAIL,
-            MANAGER_PASSWORD,
+            fixture_password(),
             "security-manager",
         ),
     ] {
@@ -137,7 +148,7 @@ async fn request(
 #[tokio::test]
 async fn live_security_settings_get_put_matches_python() {
     let app = build_router(parity_state().await);
-    let token = login(&app, ADMIN_EMAIL, ADMIN_PASSWORD).await;
+    let token = login(&app, ADMIN_EMAIL, fixture_password()).await;
 
     let get = request(
         &app,
@@ -186,11 +197,115 @@ async fn live_security_settings_get_put_matches_python() {
     );
 }
 
+#[tokio::test]
+async fn security_settings_report_locked_policy_and_publish_autosave_updates() {
+    let mut state = parity_state().await;
+    state.config.shared_storage.local_host_ip_bypass = false;
+    state.config.shared_storage.local_host_ip_bypass_locked = true;
+    let storage = state.storage.as_ref().unwrap().clone();
+    let mut autosave = state.runtime.memory_autosave_config();
+    let app = build_router(state);
+    let token = login(&app, ADMIN_EMAIL, fixture_password()).await;
+    let update = request(
+        &app,
+        Method::PUT,
+        "/platform/security/settings",
+        &token,
+        Some(json!({
+            "allow_localhost_bypass": true,
+            "trust_x_forwarded_for": true,
+            "xff_trusted_proxies": [],
+            "enable_auto_save": true,
+            "auto_save_frequency_seconds": 120,
+            "dump_path": "nested/security-backup.bin"
+        })),
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+    assert!(autosave.has_changed().unwrap());
+    let applied = autosave.borrow_and_update().clone();
+    assert!(applied.enabled);
+    assert_eq!(applied.frequency_seconds, 120);
+    assert_eq!(
+        applied.dump_path.as_deref(),
+        Some("nested/security-backup.bin")
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .uri("/platform/security/settings")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("x-forwarded-for", "203.0.113.9, 10.0.0.2")
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:43210".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let settings = response_payload(&body);
+    assert_eq!(settings["allow_localhost_bypass_locked"], true);
+    assert_eq!(settings["allow_localhost_bypass"], false);
+    assert_eq!(settings["client_ip"], "127.0.0.1");
+    assert_eq!(settings["client_ip_xff"], "203.0.113.9");
+    assert_eq!(settings["security_warnings"].as_array().unwrap().len(), 1);
+    assert!(settings.get("_id").is_none());
+
+    let before = storage.find_one("settings", &json!({})).await.unwrap();
+    let invalid = request(
+        &app,
+        Method::PUT,
+        "/platform/security/settings",
+        &token,
+        Some(json!({
+            "auto_save_frequency_seconds": 1, "enable_auto_save": false
+        })),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        storage.find_one("settings", &json!({})).await.unwrap(),
+        before
+    );
+    assert!(!autosave.has_changed().unwrap());
+
+    // A persisted bypass cannot defeat the environment lock on other routes.
+    request(
+        &app,
+        Method::PUT,
+        "/platform/security/settings",
+        &token,
+        Some(json!({
+            "ip_blacklist": ["127.0.0.1"]
+        })),
+    )
+    .await;
+    let denied = app
+        .oneshot(
+            http::Request::builder()
+                .uri("/platform/user/me")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:43210".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+}
+
 // Python: backend-services/live-tests/test_90_security_tools_logging.py::test_tools_cors_check
 #[tokio::test]
 async fn live_tools_cors_check_matches_python() {
     let app = build_router(parity_state().await);
-    let token = login(&app, ADMIN_EMAIL, ADMIN_PASSWORD).await;
+    let token = login(&app, ADMIN_EMAIL, fixture_password()).await;
     let response = request(
         &app,
         Method::POST,
@@ -215,7 +330,7 @@ async fn live_tools_cors_check_matches_python() {
 #[tokio::test]
 async fn live_logging_endpoints_match_python() {
     let app = build_router(parity_state().await);
-    let token = login(&app, ADMIN_EMAIL, ADMIN_PASSWORD).await;
+    let token = login(&app, ADMIN_EMAIL, fixture_password()).await;
 
     let logs = request(
         &app,
@@ -246,7 +361,7 @@ async fn live_logging_endpoints_match_python() {
 #[tokio::test]
 async fn live_clear_all_caches_matches_python() {
     let app = build_router(parity_state().await);
-    let token = login(&app, ADMIN_EMAIL, ADMIN_PASSWORD).await;
+    let token = login(&app, ADMIN_EMAIL, fixture_password()).await;
     let response = request(&app, Method::DELETE, "/api/caches", &token, None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -267,8 +382,8 @@ async fn live_clear_all_caches_matches_python() {
 #[tokio::test]
 async fn security_settings_require_manage_security_permission() {
     let app = build_router(parity_state().await);
-    let limited = login(&app, LIMITED_EMAIL, LIMITED_PASSWORD).await;
-    let manager = login(&app, MANAGER_EMAIL, MANAGER_PASSWORD).await;
+    let limited = login(&app, LIMITED_EMAIL, fixture_password()).await;
+    let manager = login(&app, MANAGER_EMAIL, fixture_password()).await;
 
     for method in [Method::GET, Method::PUT] {
         let payload = (method == Method::PUT).then(|| json!({"trust_x_forwarded_for": true}));
@@ -307,4 +422,77 @@ async fn security_settings_require_manage_security_permission() {
         response_payload(&put)["trust_x_forwarded_for"].as_bool(),
         Some(true)
     );
+}
+
+#[tokio::test]
+async fn log_export_filters_records_and_redacts_nested_credentials() {
+    let directory = std::env::temp_dir().join(format!("doorman-log-export-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut state = parity_state().await;
+    state.config.logs_dir = Some(directory.clone());
+    let app = build_router(state);
+    let token = login(&app, ADMIN_EMAIL, fixture_password()).await;
+    let records = [
+        json!({"time":"2026-09-13T12:00:00Z","name":"fixture","user":"fixture-user","level":"ERROR","message":"upstream failed","headers":{"authorization":"Bearer secret-auth"},"api_key":"secret-key","details":[{"password":"secret-password"}]}),
+        json!({"time":"2026-09-12T12:00:00Z","name":"fixture","user":"fixture-user","level":"INFO","message":"earlier request"}),
+    ];
+    std::fs::write(
+        directory.join("fixture.log"),
+        records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let response = request(&app, Method::GET,
+        "/platform/logging/logs/export?user=fixture-user&start_date=2026-09-13&end_date=2026-09-13&level=error",
+        &token, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let exported = response_payload(&body)["data"].as_str().unwrap();
+    let records: Vec<Value> = serde_json::from_str(exported).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["message"], "upstream failed");
+    for secret in ["secret-auth", "secret-key", "secret-password"] {
+        assert!(!exported.contains(secret));
+    }
+    assert_eq!(records[0]["headers"]["authorization"], "[REDACTED]");
+    assert_eq!(records[0]["api_key"], "[REDACTED]");
+    let csv = request(
+        &app,
+        Method::GET,
+        "/platform/logging/logs/download?user=fixture-user&format=csv",
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(csv.status(), StatusCode::OK);
+    assert!(
+        csv.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/csv")
+    );
+    assert!(
+        csv.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .contains("attachment;")
+    );
+    let csv =
+        String::from_utf8(to_bytes(csv.into_body(), 64 * 1024).await.unwrap().to_vec()).unwrap();
+    assert!(csv.contains("upstream failed"));
+    assert!(csv.contains("earlier request"));
+    let limited = login(&app, LIMITED_EMAIL, fixture_password()).await;
+    let denied = request(
+        &app,
+        Method::GET,
+        "/platform/logging/logs/export",
+        &limited,
+        None,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    std::fs::remove_dir_all(directory).unwrap();
 }

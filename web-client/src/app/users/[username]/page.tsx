@@ -120,17 +120,32 @@ const UserDetailPage = () => {
   }, [])
 
   useEffect(() => {
-    const userData = sessionStorage.getItem('selectedUser')
-    if (userData) {
+    const initUser = async () => {
       try {
-        const parsedUser = JSON.parse(userData)
+        let parsedUser: any = null
+        const userData = sessionStorage.getItem('selectedUser')
+
+        if (userData) {
+          parsedUser = JSON.parse(userData)
+        } else if (username) {
+          const fetched = await fetchJson(`${SERVER_URL}/platform/user/${encodeURIComponent(username as string)}`)
+          parsedUser = fetched
+          sessionStorage.setItem('selectedUser', JSON.stringify(fetched))
+        }
+
+        if (!parsedUser) {
+          setError('No user data found')
+          setLoading(false)
+          return
+        }
+
         setUser(parsedUser)
         setEditData({
           username: parsedUser.username,
           email: parsedUser.email,
           role: parsedUser.role,
           tier_id: parsedUser.tier_id,
-          groups: [...parsedUser.groups],
+          groups: [...(parsedUser.groups || [])],
           rate_limit_duration: parsedUser.rate_limit_duration,
           rate_limit_duration_type: parsedUser.rate_limit_duration_type,
           rate_limit_enabled: Boolean((parsedUser as any).rate_limit_enabled),
@@ -140,16 +155,18 @@ const UserDetailPage = () => {
           throttle_wait_duration_type: parsedUser.throttle_wait_duration_type,
           throttle_queue_limit: parsedUser.throttle_queue_limit,
           throttle_enabled: Boolean((parsedUser as any).throttle_enabled),
-          custom_attributes: { ...parsedUser.custom_attributes },
+          custom_attributes: { ...(parsedUser.custom_attributes || {}) },
           bandwidth_limit_bytes: parsedUser.bandwidth_limit_bytes,
           bandwidth_limit_window: parsedUser.bandwidth_limit_window,
-          bandwidth_limit_enabled: (parsedUser as any).bandwidth_limit_enabled,
+          bandwidth_limit_enabled: Boolean((parsedUser as any).bandwidth_limit_enabled),
           active: parsedUser.active,
           ui_access: parsedUser.ui_access
         })
         setLoading(false)
-        ;(async () => {
-          try {
+
+        try {
+          // If we had session data, fetch to ensure it's fresh
+          if (userData) {
             const refreshed = await fetchJson(`${SERVER_URL}/platform/user/${encodeURIComponent(parsedUser.username)}`)
             setUser(refreshed)
             sessionStorage.setItem('selectedUser', JSON.stringify(refreshed))
@@ -162,32 +179,33 @@ const UserDetailPage = () => {
               rate_limit_enabled: Boolean((refreshed as any).rate_limit_enabled),
               throttle_enabled: Boolean((refreshed as any).throttle_enabled),
             }))
-            // Fetch current tier if assigned
-            if (refreshed.tier_id) {
-              try {
-                const tier = await fetchJson(`${SERVER_URL}/platform/tiers/${refreshed.tier_id}`)
-                // Ensure tier is a valid object with tier_id
-                if (tier && typeof tier === 'object' && tier.tier_id) {
-                  setCurrentTier(tier)
-                } else {
-                  setCurrentTier(null)
-                }
-              } catch {
+            parsedUser = refreshed
+          }
+
+          if (parsedUser.tier_id) {
+            try {
+              const tier = await fetchJson(`${SERVER_URL}/platform/tiers/${parsedUser.tier_id}`)
+              if (tier && typeof tier === 'object' && tier.tier_id) {
+                setCurrentTier(tier)
+              } else {
                 setCurrentTier(null)
               }
-            } else {
+            } catch {
               setCurrentTier(null)
             }
-          } catch {}
-        })()
+          } else {
+            setCurrentTier(null)
+          }
+        } catch {
+          // Ignore refresh/tier errors
+        }
       } catch (err) {
         setError('Failed to load user data')
         setLoading(false)
       }
-    } else {
-      setError('No user data found')
-      setLoading(false)
     }
+
+    initUser()
   }, [username])
 
   const handleBack = () => {

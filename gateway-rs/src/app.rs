@@ -63,7 +63,27 @@ pub fn build_router(state: AppState) -> Router {
             security_headers,
         ))
         .layer(axum_middleware::from_fn(request_id))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+            tracing::debug_span!("http_request", method = %request.method())
+        }))
+        .layer(
+            tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer::from_shared(
+                crate::gateway::headers::SENSITIVE_HEADERS
+                    .iter()
+                    .cloned()
+                    .map(http::header::HeaderName::from_static)
+                    .collect::<std::sync::Arc<[_]>>(),
+            ),
+        )
+        .layer(
+            tower_http::sensitive_headers::SetSensitiveResponseHeadersLayer::from_shared(
+                crate::gateway::headers::SENSITIVE_HEADERS
+                    .iter()
+                    .cloned()
+                    .map(http::header::HeaderName::from_static)
+                    .collect::<std::sync::Arc<[_]>>(),
+            ),
+        )
         .layer(CatchPanicLayer::new());
     let platform = Router::new()
         .route("/", any(platform_dispatch))
@@ -78,7 +98,27 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .layer(axum_middleware::from_fn(platform_cors))
         .layer(axum_middleware::from_fn(request_id))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+            tracing::debug_span!("http_request", method = %request.method())
+        }))
+        .layer(
+            tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer::from_shared(
+                crate::gateway::headers::SENSITIVE_HEADERS
+                    .iter()
+                    .cloned()
+                    .map(http::header::HeaderName::from_static)
+                    .collect::<std::sync::Arc<[_]>>(),
+            ),
+        )
+        .layer(
+            tower_http::sensitive_headers::SetSensitiveResponseHeadersLayer::from_shared(
+                crate::gateway::headers::SENSITIVE_HEADERS
+                    .iter()
+                    .cloned()
+                    .map(http::header::HeaderName::from_static)
+                    .collect::<std::sync::Arc<[_]>>(),
+            ),
+        )
         .layer(CatchPanicLayer::new());
 
     Router::new()

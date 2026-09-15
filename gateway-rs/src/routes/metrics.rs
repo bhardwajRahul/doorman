@@ -10,9 +10,7 @@ use axum::{
 };
 use http::{StatusCode, header};
 
-use crate::{
-    middleware::client_ip::effective_client_ip, observability::metrics::render, state::AppState,
-};
+use crate::{observability::metrics::render, policy::ip::effective_client_ip, state::AppState};
 
 const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
