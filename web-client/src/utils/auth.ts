@@ -55,7 +55,9 @@ export function decodeJWT(token: string): JWTPayload | null {
 }
 
 export function getTokenFromCookie(): string | null {
-  return null
+  if (typeof document === 'undefined') return null
+  const match = document.cookie.split('; ').find(c => c.startsWith('access_token_cookie='))
+  return match ? decodeURIComponent(match.split('=')[1]) : null
 }
 
 export function isTokenValid(token: string): boolean {

@@ -44,15 +44,30 @@ use crate::{
     platform_contract::{normalize_create_api, normalize_update_api},
     policy::{
         auth::{AuthClaims, verify_request_token},
-        ip::{effective_client_ip_for_settings, enforce_api_ip_policy},
+        ip::{effective_client_ip_for_settings, enforce_configured_api_ip_policy},
         rate_limit::duration_to_seconds,
     },
-    state::AppState,
+    state::{AppState, MemoryAutosaveConfig},
     storage::{
         models::{bool_field_default, strip_mongo_id},
         redis::bandwidth_key,
+        runtime::SharedStorage,
     },
 };
+
+#[derive(Debug, Default)]
+pub struct DescriptorBackfill {
+    pub scanned: u64,
+    pub updated: u64,
+    pub skipped: u64,
+    pub errors: Vec<Value>,
+}
+
+impl DescriptorBackfill {
+    pub fn missing(&self) -> usize {
+        self.errors.len()
+    }
+}
 
 #[derive(Serialize)]
 struct AccessClaims {
@@ -77,6 +92,15 @@ struct EntitySpec {
     deleted: &'static str,
     duplicate_code: &'static str,
     not_found_code: &'static str,
+}
+
+/// Removes the per-request protoc work directory on every return path.
+struct ProtoCompileDirectory(std::path::PathBuf);
+
+impl Drop for ProtoCompileDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 const RBAC_PERMISSIONS: &[&str] = &[
@@ -245,7 +269,7 @@ pub async fn platform_dispatch(
         )
         .await;
         audit_management_request(&username, &method, path, &response);
-        return response;
+        return with_platform_activity_context(response, &username, path);
     }
 
     if let Some(response) = dispatch_core_entities(
@@ -260,7 +284,7 @@ pub async fn platform_dispatch(
     .await
     {
         audit_management_request(&username, &method, path, &response);
-        return response;
+        return with_platform_activity_context(response, &username, path);
     }
 
     let response = match (method.clone(), path) {
@@ -387,7 +411,7 @@ pub async fn platform_dispatch(
                     &request_id,
                 )
             } else {
-                get_security_settings(&state, &request_id).await
+                get_security_settings(&state, &headers, direct_addr, &request_id).await
             }
         }
         (Method::PUT, "/security/settings") => {
@@ -399,7 +423,7 @@ pub async fn platform_dispatch(
                     &request_id,
                 )
             } else {
-                upsert_singleton(&state, "settings", payload, &request_id).await
+                upsert_security_settings(&state, &username, payload, &request_id).await
             }
         }
         (Method::POST, "/security/restart") => {
@@ -446,7 +470,9 @@ pub async fn platform_dispatch(
         (Method::POST, "/config/import") => {
             config_import(&state, &username, payload, &request_id).await
         }
-        (Method::POST, "/config/rollback") => config_rollback(&state, &username, &request_id).await,
+        (Method::POST, "/config/rollback") => {
+            config_rollback(&state, &username, payload, &request_id).await
+        }
         (Method::GET, "/config/current") => {
             if !has_permission(&state, &username, "manage_gateway").await {
                 http_detail(
@@ -469,13 +495,13 @@ pub async fn platform_dispatch(
                 success(
                     StatusCode::OK,
                     json!({
-                        "reloadable_keys": reloadable_keys(),
-                        "total": 22,
+                        "reloadable_keys": active_reloadable_keys(),
+                        "total": 3,
+                        "restart_required_keys": restart_required_keys(),
                         "notes": [
                             "Environment variables always override config file values",
-                            "Changes take effect immediately after reload",
-                            "Reload via: kill -HUP $(cat doorman.pid)",
-                            "Or use: POST /config/reload"
+                            "GATEWAY_TIMEOUT, RETRY_ENABLED, and RETRY_MAX_ATTEMPTS apply to the next REST, GraphQL, or SOAP request",
+                            "All other listed settings require a controlled restart or rolling deployment"
                         ]
                     }),
                     &request_id,
@@ -490,15 +516,27 @@ pub async fn platform_dispatch(
                     &request_id,
                 )
             } else {
-                state.hot_reload.reload();
-                success(
-                    StatusCode::OK,
-                    json!({
-                        "message": "Configuration reloaded successfully",
-                        "config": state.hot_reload.dump()
-                    }),
-                    &request_id,
-                )
+                match state.hot_reload.reload() {
+                    Ok(()) => success(
+                        StatusCode::OK,
+                        json!({
+                            "message": "Configuration reloaded; supported HTTP gateway settings apply to subsequent requests",
+                            "config": state.hot_reload.dump(),
+                            "applied": ["GATEWAY_TIMEOUT", "RETRY_ENABLED", "RETRY_MAX_ATTEMPTS"],
+                            "restart_required": true
+                        }),
+                        &request_id,
+                    ),
+                    Err(error_value) => {
+                        tracing::warn!(error = %error_value, "configuration inspection reload failed");
+                        error(
+                            StatusCode::BAD_REQUEST,
+                            "CFG001",
+                            "Configuration reload failed",
+                            &request_id,
+                        )
+                    }
+                }
             }
         }
         (Method::POST, "/demo/seed") => demo_seed(&state, &username, &request_id).await,
@@ -710,7 +748,7 @@ pub async fn platform_dispatch(
                 )
                 .await
             } else if path.starts_with("/logging") {
-                logging_routes(&state, path, &method, &username, &request_id).await
+                logging_routes(&state, path, &method, &query, &username, &request_id).await
             } else if path.starts_with("/openapi") || path.starts_with("/wsdl") {
                 discovery_parse(
                     &state,
@@ -733,6 +771,19 @@ pub async fn platform_dispatch(
         }
     };
     audit_management_request(&username, &method, path, &response);
+    with_platform_activity_context(response, &username, path)
+}
+
+/// Preserve the authenticated actor and route family for the outer activity
+/// middleware without exposing credentials or request payloads to a log sink.
+fn with_platform_activity_context(mut response: Response, username: &str, path: &str) -> Response {
+    response
+        .extensions_mut()
+        .insert(crate::middleware::activity::ActivityContext {
+            username: Some(username.to_owned()),
+            endpoint: Some(path.to_owned()),
+            ..Default::default()
+        });
     response
 }
 
@@ -1114,11 +1165,23 @@ async fn tier_management_routes(
             .find_many("user_tier_assignments", &json!({}))
             .await
             .unwrap_or_default();
-        return success(
-            StatusCode::OK,
-            json!({"assignments": assignments.len()}),
-            request_id,
-        );
+        let mut stats: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for assignment in assignments {
+            if let Some(tier_id) = assignment.get("tier_id").and_then(|v| v.as_str()) {
+                *stats.entry(tier_id.to_string()).or_insert(0) += 1;
+            }
+        }
+        let result: Vec<Value> = stats
+            .into_iter()
+            .map(|(tier_id, count)| {
+                json!({
+                    "tier_id": tier_id,
+                    "total_users": count,
+                    "active_users": count
+                })
+            })
+            .collect();
+        return success(StatusCode::OK, json!(result), request_id);
     }
     if suffix == "compare" && method == Method::POST {
         let ids = payload
@@ -1245,10 +1308,10 @@ async fn rate_limit_management_routes(
         return success(StatusCode::OK, json!(rules), request_id);
     }
     if suffix == "statistics/summary" && method == Method::GET {
-        let rules = storage
-            .find_many("rate_limit_rules", &json!({}))
-            .await
-            .unwrap_or_default();
+        let rules = match storage.find_many("rate_limit_rules", &json!({})).await {
+            Ok(rules) => rules,
+            Err(_) => return unexpected(request_id),
+        };
         let enabled = rules
             .iter()
             .filter(|rule| rule.get("enabled").and_then(Value::as_bool).unwrap_or(true))
@@ -1260,9 +1323,13 @@ async fn rate_limit_management_routes(
         );
     }
     if suffix == "status" && method == Method::GET {
+        let rules = match storage.find_many("rate_limit_rules", &json!({})).await {
+            Ok(rules) => rules.len(),
+            Err(_) => return unexpected(request_id),
+        };
         return success(
             StatusCode::OK,
-            json!({"enabled": true, "rules": storage.find_many("rate_limit_rules", &json!({})).await.unwrap_or_default().len()}),
+            json!({"enabled": true, "rules": rules}),
             request_id,
         );
     }
@@ -1447,7 +1514,15 @@ async fn entity_routes(
             }
         }
         return match storage.insert_one(spec.collection, payload).await {
-            Ok(_) => message(StatusCode::CREATED, spec.created, request_id),
+            Ok(_) => {
+                audit::management_mutation(
+                    username,
+                    "management.create",
+                    &format!("{}:{key}", spec.collection),
+                    "success",
+                );
+                message(StatusCode::CREATED, spec.created, request_id)
+            }
             Err(duplicate_error) if duplicate_error.is_duplicate_key() => error(
                 StatusCode::BAD_REQUEST,
                 spec.duplicate_code,
@@ -1541,7 +1616,15 @@ async fn entity_routes(
             );
         }
         return match storage.update_one(spec.collection, &filter, &payload).await {
-            Ok(Some(_)) => message(StatusCode::OK, spec.updated, request_id),
+            Ok(Some(_)) => {
+                audit::management_mutation(
+                    username,
+                    "management.update",
+                    &format!("{}:{key}", spec.collection),
+                    "success",
+                );
+                message(StatusCode::OK, spec.updated, request_id)
+            }
             Ok(None) => error(
                 StatusCode::NOT_FOUND,
                 spec.not_found_code,
@@ -1585,7 +1668,15 @@ async fn entity_routes(
             );
         }
         return match storage.delete_one(spec.collection, &filter).await {
-            Ok(true) => message(StatusCode::OK, spec.deleted, request_id),
+            Ok(true) => {
+                audit::management_mutation(
+                    username,
+                    "management.delete",
+                    &format!("{}:{key}", spec.collection),
+                    "success",
+                );
+                message(StatusCode::OK, spec.deleted, request_id)
+            }
             Ok(false) => error(
                 StatusCode::NOT_FOUND,
                 spec.not_found_code,
@@ -1701,11 +1792,19 @@ async fn api_routes(
             payload["api_id"] = json!(Uuid::new_v4().to_string());
             payload["api_path"] = json!(format!("/{name}/{version}"));
             return match storage.update_one("apis", &filter, &payload).await {
-                Ok(Some(api)) => success(
-                    StatusCode::CREATED,
-                    json!({"api": strip_internal(api)}),
-                    request_id,
-                ),
+                Ok(Some(api)) => {
+                    audit::management_mutation(
+                        username,
+                        "api.create",
+                        &format!("{name}/{version}"),
+                        "success",
+                    );
+                    success(
+                        StatusCode::CREATED,
+                        json!({"api": strip_internal(api)}),
+                        request_id,
+                    )
+                }
                 _ => unexpected(request_id),
             };
         }
@@ -1717,6 +1816,12 @@ async fn api_routes(
         return match storage.insert_one("apis", payload).await {
             Ok(api) => {
                 let _ = storage.delete_one("grpc_proto_uploads", &filter).await;
+                audit::management_mutation(
+                    username,
+                    "api.create",
+                    &format!("{name}/{version}"),
+                    "success",
+                );
                 success(
                     StatusCode::CREATED,
                     json!({"api": strip_internal(api)}),
@@ -1843,7 +1948,15 @@ async fn api_routes(
             );
         }
         return match storage.update_one("apis", &filter, &payload).await {
-            Ok(Some(_)) => message(StatusCode::OK, "API updated successfully", request_id),
+            Ok(Some(_)) => {
+                audit::management_mutation(
+                    username,
+                    "api.update",
+                    &format!("{}/{}", parts[0], parts[1]),
+                    "success",
+                );
+                message(StatusCode::OK, "API updated successfully", request_id)
+            }
             Ok(None) => error(
                 StatusCode::BAD_REQUEST,
                 "API003",
@@ -1855,7 +1968,15 @@ async fn api_routes(
     }
     if method == Method::DELETE {
         return match storage.delete_one("apis", &filter).await {
-            Ok(true) => message(StatusCode::OK, "API deleted successfully", request_id),
+            Ok(true) => {
+                audit::management_mutation(
+                    username,
+                    "api.delete",
+                    &format!("{}/{}", parts[0], parts[1]),
+                    "success",
+                );
+                message(StatusCode::OK, "API deleted successfully", request_id)
+            }
             Ok(false) => error(
                 StatusCode::BAD_REQUEST,
                 "API003",
@@ -2038,7 +2159,11 @@ async fn user_routes(
                     request_id,
                 );
             }
-            payload = json!({"password": bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap_or_default()});
+            let password_hash = match bcrypt::hash(password, bcrypt::DEFAULT_COST) {
+                Ok(password_hash) => password_hash,
+                Err(_) => return unexpected(request_id),
+            };
+            payload = json!({"password": password_hash});
         } else if let Some(password) = payload.get("password").and_then(Value::as_str) {
             if !secure_password(password) {
                 return error(
@@ -2048,23 +2173,38 @@ async fn user_routes(
                     request_id,
                 );
             }
-            payload["password"] =
-                json!(bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap_or_default());
+            let password_hash = match bcrypt::hash(password, bcrypt::DEFAULT_COST) {
+                Ok(password_hash) => password_hash,
+                Err(_) => return unexpected(request_id),
+            };
+            payload["password"] = json!(password_hash);
         }
         let password_update = suffix.ends_with("/update-password");
         return match storage
             .update_one("users", &json!({"username": target}), &payload)
             .await
         {
-            Ok(Some(_)) => message(
-                StatusCode::OK,
-                if password_update {
-                    "Password updated successfully"
-                } else {
-                    "User updated successfully"
-                },
-                request_id,
-            ),
+            Ok(Some(_)) => {
+                audit::management_mutation(
+                    active_user,
+                    if password_update {
+                        "user.password_update"
+                    } else {
+                        "user.update"
+                    },
+                    target,
+                    "success",
+                );
+                message(
+                    StatusCode::OK,
+                    if password_update {
+                        "Password updated successfully"
+                    } else {
+                        "User updated successfully"
+                    },
+                    request_id,
+                )
+            }
             Ok(None) => error(
                 StatusCode::NOT_FOUND,
                 "USR002",
@@ -2112,7 +2252,10 @@ async fn user_routes(
             .delete_one("users", &json!({"username": target}))
             .await
         {
-            Ok(true) => message(StatusCode::OK, "User deleted successfully", request_id),
+            Ok(true) => {
+                audit::management_mutation(active_user, "user.delete", target, "success");
+                message(StatusCode::OK, "User deleted successfully", request_id)
+            }
             Ok(false) => error(
                 StatusCode::NOT_FOUND,
                 "USR002",
@@ -2182,11 +2325,19 @@ async fn endpoint_routes(
             );
         }
         return match storage.insert_one("endpoint_validations", payload).await {
-            Ok(_) => message(
-                StatusCode::CREATED,
-                "Endpoint validation created successfully",
-                request_id,
-            ),
+            Ok(_) => {
+                audit::management_mutation(
+                    username,
+                    "endpoint_validation.create",
+                    "endpoint_validation",
+                    "success",
+                );
+                message(
+                    StatusCode::CREATED,
+                    "Endpoint validation created successfully",
+                    request_id,
+                )
+            }
             Err(_) => unexpected(request_id),
         };
     }
@@ -2219,12 +2370,22 @@ async fn endpoint_routes(
         if payload.get("client_uri").is_none() {
             payload["client_uri"] = payload["endpoint_uri"].clone();
         }
+        let target = format!(
+            "{}/{}/{}{}",
+            payload["api_name"].as_str().unwrap_or_default(),
+            payload["api_version"].as_str().unwrap_or_default(),
+            payload["endpoint_method"].as_str().unwrap_or_default(),
+            payload["endpoint_uri"].as_str().unwrap_or_default(),
+        );
         return match storage.insert_one("endpoints", payload).await {
-            Ok(_) => message(
-                StatusCode::CREATED,
-                "Endpoint created successfully",
-                request_id,
-            ),
+            Ok(_) => {
+                audit::management_mutation(username, "endpoint.create", &target, "success");
+                message(
+                    StatusCode::CREATED,
+                    "Endpoint created successfully",
+                    request_id,
+                )
+            }
             Err(_) => unexpected(request_id),
         };
     }
@@ -2314,11 +2475,19 @@ async fn document_by_method(
     }
     if method == Method::PUT {
         return match storage.update_one(collection, &filter, &payload).await {
-            Ok(Some(_)) => message(
-                StatusCode::OK,
-                &format!("{label} updated successfully"),
-                request_id,
-            ),
+            Ok(Some(_)) => {
+                audit::management_mutation(
+                    username,
+                    &format!("{}.update", label.to_ascii_lowercase().replace(' ', "_")),
+                    &filter.to_string(),
+                    "success",
+                );
+                message(
+                    StatusCode::OK,
+                    &format!("{label} updated successfully"),
+                    request_id,
+                )
+            }
             Ok(None) => error(
                 StatusCode::NOT_FOUND,
                 "EPT002",
@@ -2330,11 +2499,19 @@ async fn document_by_method(
     }
     if method == Method::DELETE {
         return match storage.delete_one(collection, &filter).await {
-            Ok(true) => message(
-                StatusCode::OK,
-                &format!("{label} deleted successfully"),
-                request_id,
-            ),
+            Ok(true) => {
+                audit::management_mutation(
+                    username,
+                    &format!("{}.delete", label.to_ascii_lowercase().replace(' ', "_")),
+                    &filter.to_string(),
+                    "success",
+                );
+                message(
+                    StatusCode::OK,
+                    &format!("{label} deleted successfully"),
+                    request_id,
+                )
+            }
             Ok(false) => error(
                 StatusCode::NOT_FOUND,
                 "EPT002",
@@ -2362,6 +2539,7 @@ async fn login(
         return unexpected(request_id);
     };
     let Some(email) = payload.get("email").and_then(Value::as_str) else {
+        audit::management_mutation("anonymous", "user.login", "unknown", "failed");
         return error(
             StatusCode::BAD_REQUEST,
             "AUTH001",
@@ -2370,6 +2548,7 @@ async fn login(
         );
     };
     let Some(password) = payload.get("password").and_then(Value::as_str) else {
+        audit::management_mutation("anonymous", "user.login", email, "failed");
         return error(
             StatusCode::BAD_REQUEST,
             "AUTH001",
@@ -2382,6 +2561,7 @@ async fn login(
         _ => match storage.find_one("users", &json!({"username": email})).await {
             Ok(Some(user)) => user,
             _ => {
+                audit::management_mutation("anonymous", "user.login", email, "failed");
                 return error(
                     StatusCode::BAD_REQUEST,
                     "AUTH002",
@@ -2396,6 +2576,7 @@ async fn login(
         .as_deref()
         .is_none_or(|hash| !bcrypt::verify(password, hash).unwrap_or(false))
     {
+        audit::management_mutation("anonymous", "user.login", email, "failed");
         return error(
             StatusCode::BAD_REQUEST,
             "AUTH002",
@@ -2404,6 +2585,7 @@ async fn login(
         );
     }
     if user.get("active").and_then(Value::as_bool) == Some(false) {
+        audit::management_mutation("anonymous", "user.login", email, "failed");
         return error(
             StatusCode::BAD_REQUEST,
             "AUTH007",
@@ -2416,6 +2598,7 @@ async fn login(
         .and_then(Value::as_str)
         .unwrap_or(email)
         .to_owned();
+    audit::management_mutation(&username, "user.login", &username, "success");
     let role = user
         .get("role")
         .and_then(Value::as_str)
@@ -2581,12 +2764,23 @@ async fn create_user(
             request_id,
         );
     }
-    payload["password"] = json!(bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap_or_default());
+    let password_hash = match bcrypt::hash(password, bcrypt::DEFAULT_COST) {
+        Ok(password_hash) => password_hash,
+        Err(_) => return unexpected(request_id),
+    };
+    payload["password"] = json!(password_hash);
     set_default(payload, "groups", json!([]));
     set_default(payload, "active", json!(true));
     set_default(payload, "ui_access", json!(false));
     match storage.insert_one("users", payload.clone()).await {
-        Ok(_) => message(StatusCode::CREATED, "User created successfully", request_id),
+        Ok(_) => {
+            if let Some(actor) = actor {
+                audit::management_mutation(actor, "user.create", &username, "success");
+            } else {
+                audit::management_mutation("anonymous", "user.register", &username, "success");
+            }
+            message(StatusCode::CREATED, "User created successfully", request_id)
+        }
         Err(_) => unexpected(request_id),
     }
 }
@@ -2740,11 +2934,26 @@ async fn authorization_routes(
         );
     }
     if path == "/authorization/invalidate" && method == Method::POST {
-        if let Some(storage) = &state.storage {
-            let _ = storage.insert_one("revocations", json!({
-                "type": "jti", "username": username, "jti": claims.jti, "expires_at": claims.exp
-            })).await;
+        let Some(storage) = &state.storage else {
+            return unexpected(request_id);
+        };
+        if let Err(error_value) = storage
+            .insert_one(
+                "revocations",
+                json!({
+                    "type": "jti", "username": username, "jti": claims.jti, "expires_at": claims.exp
+                }),
+            )
+            .await
+        {
+            // Repeating an already-persisted invalidation is safe and
+            // idempotent.  Every other storage failure must be visible to the
+            // caller rather than falsely claiming the token was revoked.
+            if !error_value.is_duplicate_key() {
+                return unexpected(request_id);
+            }
         }
+        audit::management_mutation(username, "authorization.invalidate", username, "success");
         let mut response = message(StatusCode::OK, "Token invalidated successfully", request_id);
         response.headers_mut().append(
             header::SET_COOKIE,
@@ -2828,15 +3037,27 @@ async fn authorization_routes(
                     )
                     .await
                 {
-                    Ok(Some(_)) => message(
-                        StatusCode::OK,
-                        if active {
-                            "User enabled successfully"
-                        } else {
-                            "User disabled successfully"
-                        },
-                        request_id,
-                    ),
+                    Ok(Some(_)) => {
+                        audit::management_mutation(
+                            username,
+                            if active {
+                                "authorization.enable"
+                            } else {
+                                "authorization.disable"
+                            },
+                            target,
+                            "success",
+                        );
+                        message(
+                            StatusCode::OK,
+                            if active {
+                                "User enabled successfully"
+                            } else {
+                                "User disabled successfully"
+                            },
+                            request_id,
+                        )
+                    }
                     Ok(None) => error(
                         StatusCode::NOT_FOUND,
                         "USR002",
@@ -2848,23 +3069,47 @@ async fn authorization_routes(
             }
         }
         if parts[0] == "revoke" || parts[0] == "unrevoke" {
-            if let Some(storage) = &state.storage {
-                if parts[0] == "revoke" {
-                    let _ = storage
-                        .insert_one(
-                            "revocations",
-                            json!({"type": "revoke_all", "username": target, "revoke_all": true}),
-                        )
-                        .await;
-                } else {
-                    let _ = storage
-                        .delete_one(
-                            "revocations",
-                            &json!({"type": "revoke_all", "username": target}),
-                        )
-                        .await;
+            let Some(storage) = &state.storage else {
+                return unexpected(request_id);
+            };
+            if parts[0] == "revoke" {
+                let _ = storage
+                    .delete_one(
+                        "revocations",
+                        &json!({"type": "revoke_all", "username": target}),
+                    )
+                    .await;
+                if let Err(error_value) = storage
+                    .insert_one(
+                        "revocations",
+                        json!({"type": "revoke_all", "username": target, "revoke_all": true, "revoked_at": unix_seconds()}),
+                    )
+                    .await
+                {
+                    if !error_value.is_duplicate_key() {
+                        return unexpected(request_id);
+                    }
                 }
+            } else if storage
+                .delete_one(
+                    "revocations",
+                    &json!({"type": "revoke_all", "username": target}),
+                )
+                .await
+                .is_err()
+            {
+                return unexpected(request_id);
             }
+            audit::management_mutation(
+                username,
+                if parts[0] == "revoke" {
+                    "authorization.revoke"
+                } else {
+                    "authorization.unrevoke"
+                },
+                target,
+                "success",
+            );
             return message(
                 StatusCode::OK,
                 if parts[0] == "revoke" {
@@ -2891,11 +3136,18 @@ async fn platform_ip_filter(
     request_id: &str,
 ) -> Option<Response> {
     let storage = state.storage.as_ref()?;
-    let settings = storage
-        .find_one("settings", &json!({}))
-        .await
-        .ok()
-        .flatten();
+    let settings = match storage.find_one("settings", &json!({})).await {
+        Ok(settings) => settings,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "security settings lookup failed; denying request");
+            return Some(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SEC012",
+                "Security policy is temporarily unavailable",
+                request_id,
+            ));
+        }
+    };
     let whitelist = settings
         .as_ref()
         .and_then(|value| value.get("ip_whitelist"))
@@ -2921,13 +3173,12 @@ async fn platform_ip_filter(
             .and_then(Value::as_bool)
             .unwrap_or(state.config.shared_storage.trust_x_forwarded_for)
     });
-    match enforce_api_ip_policy(
+    match enforce_configured_api_ip_policy(
         &api,
         settings.as_ref(),
         headers,
         direct_addr.map(|addr| addr.ip()),
-        state.config.shared_storage.trust_x_forwarded_for,
-        state.config.shared_storage.local_host_ip_bypass,
+        &state.config.shared_storage,
     ) {
         Ok(()) => None,
         Err(failure) => {
@@ -3049,21 +3300,25 @@ async fn authorize(
             request_id,
         ));
     }
-    if matches!(
-        storage
-            .find_one(
-                "revocations",
-                &json!({"type": "revoke_all", "username": username})
-            )
-            .await,
-        Ok(Some(_))
-    ) {
-        return Err(error(
-            StatusCode::UNAUTHORIZED,
-            "AUTH003",
-            "Token has been revoked",
-            request_id,
-        ));
+    if let Ok(Some(revocation)) = storage
+        .find_one(
+            "revocations",
+            &json!({"type": "revoke_all", "username": username}),
+        )
+        .await
+    {
+        let revoked_at = revocation
+            .get("revoked_at")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX);
+        if (claims.iat.unwrap_or(0) as u64) <= revoked_at {
+            return Err(error(
+                StatusCode::UNAUTHORIZED,
+                "AUTH003",
+                "Token has been revoked",
+                request_id,
+            ));
+        }
     }
     if let Some(jti) = claims.jti.as_deref() {
         let filter = json!({"type": "jti", "username": username, "jti": jti});
@@ -3168,17 +3423,26 @@ async fn memory_dump(
     }
     let path = payload.get("path").and_then(Value::as_str);
     match crate::storage::snapshot::dump(storage, path).await {
-        Ok(path) => success(
-            StatusCode::OK,
-            json!({"response": {"path": path}}),
-            request_id,
-        ),
-        Err(crate::storage::snapshot::SnapshotError::MissingKey) => error(
-            StatusCode::BAD_REQUEST,
-            "MEM002",
-            "MEM_ENCRYPTION_KEY is not configured",
-            request_id,
-        ),
+        Ok(path) => {
+            audit::management_mutation(username, "memory.dump", "memory_snapshot", "success");
+            success(
+                StatusCode::OK,
+                json!({"response": {"path": path}}),
+                request_id,
+            )
+        }
+        Err(crate::storage::snapshot::SnapshotError::MissingKey)
+            if env::var("MEM_ENCRYPTION_KEY")
+                .unwrap_or_default()
+                .is_empty() =>
+        {
+            error(
+                StatusCode::BAD_REQUEST,
+                "MEM002",
+                "MEM_ENCRYPTION_KEY is not configured",
+                request_id,
+            )
+        }
         Err(crate::storage::snapshot::SnapshotError::InvalidPath) => error(
             StatusCode::BAD_REQUEST,
             "MEM004",
@@ -3216,17 +3480,26 @@ async fn memory_restore(
     }
     let path = payload.get("path").and_then(Value::as_str);
     match crate::storage::snapshot::restore(storage, path).await {
-        Ok((version, created_at)) => success(
-            StatusCode::OK,
-            json!({"response": {"version": version, "created_at": created_at}}),
-            request_id,
-        ),
-        Err(crate::storage::snapshot::SnapshotError::MissingKey) => error(
-            StatusCode::BAD_REQUEST,
-            "MEM002",
-            "MEM_ENCRYPTION_KEY is not configured",
-            request_id,
-        ),
+        Ok((version, created_at)) => {
+            audit::management_mutation(username, "memory.restore", "memory_snapshot", "success");
+            success(
+                StatusCode::OK,
+                json!({"response": {"version": version, "created_at": created_at}}),
+                request_id,
+            )
+        }
+        Err(crate::storage::snapshot::SnapshotError::MissingKey)
+            if env::var("MEM_ENCRYPTION_KEY")
+                .unwrap_or_default()
+                .is_empty() =>
+        {
+            error(
+                StatusCode::BAD_REQUEST,
+                "MEM002",
+                "MEM_ENCRYPTION_KEY is not configured",
+                request_id,
+            )
+        }
         Err(crate::storage::snapshot::SnapshotError::InvalidPath) => error(
             StatusCode::BAD_REQUEST,
             "MEM004",
@@ -3301,11 +3574,23 @@ async fn readiness(state: &AppState, privileged: bool, request_id: &str) -> Resp
         .runtime
         .metrics_persistence_healthy
         .load(Ordering::Relaxed);
+    let revocation_purge_healthy = state
+        .runtime
+        .revocation_purge_healthy
+        .load(Ordering::Relaxed);
+    let activity_log_healthy = state.runtime.activity_log_healthy.load(Ordering::Relaxed);
+    let security_audit_log_healthy = state
+        .runtime
+        .security_audit_log_healthy
+        .load(Ordering::Relaxed);
     let ready = mongo_ok
         && redis_ok
         && missing_grpc_descriptors == 0
         && memory_snapshot_healthy
-        && metrics_persistence_healthy;
+        && metrics_persistence_healthy
+        && revocation_purge_healthy
+        && activity_log_healthy
+        && security_audit_log_healthy;
     let status = if ready { "ready" } else { "degraded" };
     let status_code = if ready {
         StatusCode::OK
@@ -3326,7 +3611,10 @@ async fn readiness(state: &AppState, privileged: bool, request_id: &str) -> Resp
             "missing_grpc_descriptors": missing_grpc_descriptors,
             "grpc_descriptor_errors": grpc_descriptor_errors,
             "memory_snapshot_healthy": memory_snapshot_healthy,
-            "metrics_persistence_healthy": metrics_persistence_healthy
+            "metrics_persistence_healthy": metrics_persistence_healthy,
+            "revocation_purge_healthy": revocation_purge_healthy,
+            "activity_log_healthy": activity_log_healthy,
+            "security_audit_log_healthy": security_audit_log_healthy
         }),
         request_id,
     )
@@ -3855,14 +4143,156 @@ async fn analytics_overview(
     )
 }
 
-async fn get_security_settings(state: &AppState, request_id: &str) -> Response {
+async fn get_security_settings(
+    state: &AppState,
+    headers: &HeaderMap,
+    direct_addr: Option<std::net::SocketAddr>,
+    request_id: &str,
+) -> Response {
     let Some(storage) = &state.storage else {
         return unexpected(request_id);
     };
     let is_memory = state.config.shared_storage.storage_mode.to_uppercase() == "MEM";
     match storage.find_many("settings", &json!({})).await {
         Ok(items) => {
-            let mut settings = items.into_iter().next().unwrap_or_else(|| json!({}));
+            let mut settings = merge_security_settings(state, items.into_iter().next());
+            let client_ip = direct_addr.map(|addr| addr.ip().to_string());
+            let client_ip_xff = headers
+                .get("x-forwarded-for")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(',').next())
+                .map(str::trim);
+            let warnings = if settings
+                .get("trust_x_forwarded_for")
+                .and_then(Value::as_bool)
+                == Some(true)
+                && settings
+                    .get("xff_trusted_proxies")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+            {
+                vec![
+                    "Trust X-Forwarded-For is enabled, but no trusted proxies are configured. Set xff_trusted_proxies to avoid header spoofing.",
+                ]
+            } else {
+                Vec::new()
+            };
+            if let Value::Object(ref mut map) = settings {
+                map.insert("memory_only".to_owned(), json!(is_memory));
+                map.insert("security_warnings".to_owned(), json!(warnings));
+                map.insert(
+                    "allow_localhost_bypass_locked".to_owned(),
+                    json!(state.config.shared_storage.local_host_ip_bypass_locked),
+                );
+                if state.config.shared_storage.local_host_ip_bypass_locked {
+                    map.insert(
+                        "allow_localhost_bypass".to_owned(),
+                        json!(state.config.shared_storage.local_host_ip_bypass),
+                    );
+                }
+                map.insert("client_ip".to_owned(), json!(client_ip));
+                map.insert("client_ip_xff".to_owned(), json!(client_ip_xff));
+            }
+            success(StatusCode::OK, strip_internal(settings), request_id)
+        }
+        Err(_) => unexpected(request_id),
+    }
+}
+
+fn merge_security_settings(state: &AppState, current: Option<Value>) -> Value {
+    let autosave_frequency = env::var("MEM_AUTO_SAVE_FREQ")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value >= 60)
+        .unwrap_or(900);
+    let mut settings = Map::from_iter([
+        ("type".to_owned(), json!("security_settings")),
+        (
+            "enable_auto_save".to_owned(),
+            json!(env_bool("MEM_AUTO_SAVE_ENABLED", false)),
+        ),
+        (
+            "auto_save_frequency_seconds".to_owned(),
+            json!(autosave_frequency),
+        ),
+        (
+            "dump_path".to_owned(),
+            json!(
+                env::var("MEM_DUMP_PATH")
+                    .unwrap_or_else(|_| "generated/memory_dump.bin".to_owned())
+            ),
+        ),
+        ("ip_whitelist".to_owned(), json!([])),
+        ("ip_blacklist".to_owned(), json!([])),
+        (
+            "trust_x_forwarded_for".to_owned(),
+            json!(state.config.shared_storage.trust_x_forwarded_for),
+        ),
+        ("xff_trusted_proxies".to_owned(), json!([])),
+        (
+            "allow_localhost_bypass".to_owned(),
+            json!(state.config.shared_storage.local_host_ip_bypass),
+        ),
+    ]);
+    if let Some(Value::Object(current)) = current {
+        settings.extend(current);
+    }
+    Value::Object(settings)
+}
+
+async fn upsert_security_settings(
+    state: &AppState,
+    username: &str,
+    payload: Value,
+    request_id: &str,
+) -> Response {
+    let payload = match normalize_security_settings(payload) {
+        Ok(payload) => payload,
+        Err(errors) => return validation_errors(errors, request_id),
+    };
+    let Some(storage) = &state.storage else {
+        return unexpected(request_id);
+    };
+    let existing = match storage.find_many("settings", &json!({})).await {
+        Ok(existing) => existing,
+        Err(_) => return unexpected(request_id),
+    };
+    let is_memory = state.config.shared_storage.storage_mode.to_uppercase() == "MEM";
+    let mut updated_doc = merge_security_settings(state, existing.first().cloned());
+    if let Value::Object(base) = &mut updated_doc {
+        base.extend(payload);
+    }
+    let result = if let Some(first) = existing.first() {
+        if let Some(id) = first.get("_id") {
+            storage
+                .update_one("settings", &json!({"_id": id}), &updated_doc)
+                .await
+                .map(|_| ())
+        } else {
+            storage
+                .replace_collection("settings", vec![updated_doc.clone()])
+                .await
+        }
+    } else {
+        storage
+            .insert_one("settings", updated_doc.clone())
+            .await
+            .map(|_| ())
+    };
+    match result {
+        Ok(()) => {
+            state
+                .runtime
+                .update_memory_autosave_config(MemoryAutosaveConfig::from_settings(Some(
+                    &updated_doc,
+                )));
+            audit::management_mutation(
+                username,
+                "security.update_settings",
+                "security_settings",
+                "success",
+            );
+            let mut settings = strip_internal(updated_doc);
             if let Value::Object(ref mut map) = settings {
                 map.insert("memory_only".to_owned(), json!(is_memory));
             }
@@ -3872,54 +4302,79 @@ async fn get_security_settings(state: &AppState, request_id: &str) -> Response {
     }
 }
 
-async fn upsert_singleton(
-    state: &AppState,
-    collection: &str,
-    payload: Value,
-    request_id: &str,
-) -> Response {
-    let Some(storage) = &state.storage else {
-        return unexpected(request_id);
-    };
-    let existing = storage
-        .find_many(collection, &json!({}))
-        .await
-        .unwrap_or_default();
-    let is_memory = state.config.shared_storage.storage_mode.to_uppercase() == "MEM";
-    let mut updated_doc = payload.clone();
-    let result = if let Some(first) = existing.first() {
-        if let Some(id) = first.get("_id") {
-            let mut merged = first.clone();
-            if let (Value::Object(base), Value::Object(new_vals)) = (&mut merged, payload) {
-                for (k, v) in new_vals {
-                    base.insert(k, v);
-                }
-            }
-            updated_doc = merged.clone();
-            storage
-                .update_one(collection, &json!({"_id": id}), &updated_doc)
-                .await
-                .map(|_| ())
-        } else {
-            storage
-                .replace_collection(collection, vec![payload.clone()])
-                .await
+fn is_valid_ip_or_cidr(s: &str) -> bool {
+    if s.contains('/') {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() != 2 {
+            return false;
         }
+        if let Ok(ip) = parts[0].parse::<std::net::IpAddr>() {
+            if let Ok(prefix) = parts[1].parse::<u8>() {
+                return match ip {
+                    std::net::IpAddr::V4(_) => prefix <= 32,
+                    std::net::IpAddr::V6(_) => prefix <= 128,
+                };
+            }
+        }
+        false
     } else {
-        storage
-            .insert_one(collection, payload.clone())
-            .await
-            .map(|_| ())
-    };
-    match result {
-        Ok(()) => {
-            let mut settings = strip_internal(updated_doc);
-            if let Value::Object(ref mut map) = settings {
-                map.insert("memory_only".to_owned(), json!(is_memory));
-            }
-            success(StatusCode::OK, settings, request_id)
+        s.parse::<std::net::IpAddr>().is_ok()
+    }
+}
+
+fn normalize_security_settings(payload: Value) -> Result<Map<String, Value>, Vec<Value>> {
+    let values = match payload {
+        Value::Null => return Ok(Map::new()),
+        Value::Object(values) => values,
+        _ => {
+            return Err(vec![json!({
+                "loc": ["body"],
+                "msg": "value is not a valid object",
+                "type": "type_error.dict"
+            })]);
         }
-        Err(_) => unexpected(request_id),
+    };
+    let mut normalized = Map::new();
+    let mut errors = Vec::new();
+    for (key, value) in values {
+        if value.is_null() {
+            continue;
+        }
+        let valid = match key.as_str() {
+            "enable_auto_save" | "trust_x_forwarded_for" | "allow_localhost_bypass" => {
+                value.is_boolean()
+            }
+            "auto_save_frequency_seconds" => value.as_u64().is_some_and(|value| value >= 60),
+            "dump_path" => value.as_str().is_some(),
+            "ip_whitelist" | "ip_blacklist" | "xff_trusted_proxies" => {
+                value.as_array().is_some_and(|values| {
+                    values
+                        .iter()
+                        .all(|v| v.as_str().is_some_and(is_valid_ip_or_cidr))
+                })
+            }
+            // Pydantic's default model configuration ignores unknown fields.
+            _ => continue,
+        };
+        if valid {
+            normalized.insert(key, value);
+        } else {
+            let message_text = if key == "auto_save_frequency_seconds" {
+                "ensure this value is greater than or equal to 60"
+            } else {
+                "invalid security setting value"
+            };
+            errors.push(json!({
+                "loc": ["body", key],
+                "msg": message_text,
+                "type": "value_error"
+            }));
+        }
+    }
+    if errors.is_empty() {
+        Ok(normalized)
+    } else {
+        Err(errors)
     }
 }
 
@@ -3954,7 +4409,6 @@ async fn config_export(
             request_id,
         );
     }
-    audit::config_export(username, only);
     let Some(storage) = &state.storage else {
         return unexpected(request_id);
     };
@@ -3965,74 +4419,51 @@ async fn config_export(
                 .cloned()
                 .unwrap_or_else(|| "v1".to_owned());
             let filter = json!({"api_name": api_name, "api_version": api_version});
-            let api = storage.find_one("apis", &filter).await.ok().flatten();
-            if let Some(api) = api {
-                let endpoints = storage
-                    .find_many("endpoints", &filter)
-                    .await
-                    .unwrap_or_default()
+            let api = match storage.find_one("apis", &filter).await {
+                Ok(Some(api)) => api,
+                Ok(None) => {
+                    return error(StatusCode::NOT_FOUND, "CFG404", "API not found", request_id);
+                }
+                Err(_) => return unexpected(request_id),
+            };
+            let endpoints = match storage.find_many("endpoints", &filter).await {
+                Ok(endpoints) => endpoints
                     .into_iter()
                     .map(strip_internal)
-                    .collect::<Vec<_>>();
-                return success(
-                    StatusCode::OK,
-                    json!({
-                        "api": strip_internal(api),
-                        "endpoints": endpoints
-                    }),
-                    request_id,
-                );
-            } else {
-                return error(StatusCode::NOT_FOUND, "CFG404", "API not found", request_id);
-            }
+                    .collect::<Vec<_>>(),
+                Err(_) => return unexpected(request_id),
+            };
+            audit::config_export(username, only);
+            return success(
+                StatusCode::OK,
+                json!({
+                    "api": strip_internal(api),
+                    "endpoints": endpoints
+                }),
+                request_id,
+            );
         }
     }
     if let Some(collection) = only {
-        let values = storage
-            .find_many(collection, &json!({}))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(strip_internal)
-            .collect::<Vec<_>>();
+        let values = match storage.find_many(collection, &json!({})).await {
+            Ok(values) => values.into_iter().map(strip_internal).collect::<Vec<_>>(),
+            Err(_) => return unexpected(request_id),
+        };
+        audit::config_export(username, only);
         return success(StatusCode::OK, json!({collection: values}), request_id);
     }
     let mut output = Map::new();
     for collection in ["apis", "endpoints", "roles", "groups", "routings"] {
-        output.insert(
-            collection.to_owned(),
-            json!(
-                storage
-                    .find_many(collection, &json!({}))
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(strip_internal)
-                    .collect::<Vec<_>>()
-            ),
-        );
+        let values = match storage.find_many(collection, &json!({})).await {
+            Ok(values) => values.into_iter().map(strip_internal).collect::<Vec<_>>(),
+            Err(_) => return unexpected(request_id),
+        };
+        output.insert(collection.to_owned(), json!(values));
     }
+    audit::config_export(username, only);
     success(StatusCode::OK, Value::Object(output), request_id)
 }
 
-fn valid_config_import_entry(collection: &str, value: &Value) -> bool {
-    let fields: &[&str] = match collection {
-        "apis" => &["api_name", "api_version"],
-        "endpoints" => &["api_name", "api_version", "endpoint_method", "endpoint_uri"],
-        "roles" => &["role_name"],
-        "groups" => &["group_name"],
-        "routings" => &["client_key"],
-        _ => return false,
-    };
-    value.as_object().is_some_and(|_| {
-        fields.iter().all(|field| {
-            value
-                .get(field)
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.is_empty())
-        })
-    })
-}
 async fn config_import(
     state: &AppState,
     username: &str,
@@ -4050,52 +4481,30 @@ async fn config_import(
     let Some(storage) = &state.storage else {
         return unexpected(request_id);
     };
-    let mut previous = Map::new();
-    for collection in ["apis", "endpoints", "roles", "groups", "routings"] {
-        previous.insert(
-            collection.to_owned(),
-            json!(
-                storage
-                    .find_many(collection, &json!({}))
-                    .await
-                    .unwrap_or_default()
-            ),
-        );
-    }
-    let mut imported = Map::new();
-    let mut replacements = Vec::new();
-    for collection in ["apis", "endpoints", "roles", "groups", "routings"] {
-        if let Some(values) = payload.get(collection).and_then(Value::as_array) {
-            let values = values
-                .iter()
-                .filter(|value| valid_config_import_entry(collection, value))
-                .cloned()
-                .collect::<Vec<_>>();
-            imported.insert(collection.to_owned(), json!(values.len()));
-            replacements.push((collection.to_owned(), values));
-        } else {
-            imported.insert(collection.to_owned(), json!(0));
-        }
-    }
-    if storage
-        .replace_collections_atomically(
-            &replacements,
-            Some(json!({
+    let imported = match storage
+        .import_configuration_atomically(
+            &payload,
+            json!({
                 "snapshot_id": Uuid::new_v4().to_string(),
                 "created_at": timestamp_now(),
-                "actor": username,
-                "data": previous
-            })),
+                "actor": username
+            }),
         )
         .await
-        .is_err()
     {
-        return unexpected(request_id);
-    }
+        Ok(imported) => imported,
+        Err(_) => return unexpected(request_id),
+    };
+    audit::management_mutation(username, "config.import", "configuration", "success");
     success(StatusCode::OK, json!({"imported": imported}), request_id)
 }
 
-async fn config_rollback(state: &AppState, username: &str, request_id: &str) -> Response {
+async fn config_rollback(
+    state: &AppState,
+    username: &str,
+    payload: Value,
+    request_id: &str,
+) -> Response {
     if !has_permission(state, username, "manage_gateway").await {
         return error(
             StatusCode::FORBIDDEN,
@@ -4107,21 +4516,43 @@ async fn config_rollback(state: &AppState, username: &str, request_id: &str) -> 
     let Some(storage) = &state.storage else {
         return unexpected(request_id);
     };
-    let Some(snapshot) = storage
-        .find_many("config_snapshots", &json!({}))
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .last()
-    else {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "CFG007",
-            "No configuration snapshot available",
-            request_id,
-        );
+    let requested_snapshot_id = payload.get("snapshot_id").and_then(Value::as_str);
+    let snapshot = if let Some(snapshot_id) = requested_snapshot_id {
+        match storage
+            .find_one("config_snapshots", &json!({"snapshot_id": snapshot_id}))
+            .await
+        {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => {
+                return error(
+                    StatusCode::NOT_FOUND,
+                    "CFG404",
+                    "Configuration snapshot not found",
+                    request_id,
+                );
+            }
+            Err(_) => return unexpected(request_id),
+        }
+    } else {
+        let snapshots = match storage.find_many("config_snapshots", &json!({})).await {
+            Ok(snapshots) => snapshots,
+            Err(_) => return unexpected(request_id),
+        };
+        let Some(snapshot) = snapshots.into_iter().max_by(|left, right| {
+            left.get("created_at")
+                .and_then(Value::as_str)
+                .cmp(&right.get("created_at").and_then(Value::as_str))
+        }) else {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "CFG007",
+                "No configuration snapshot available",
+                request_id,
+            );
+        };
+        snapshot
     };
-    let Some(data) = snapshot.get("data") else {
+    let Some(data) = snapshot.get("data").and_then(Value::as_object) else {
         return error(
             StatusCode::BAD_REQUEST,
             "CFG007",
@@ -4129,18 +4560,18 @@ async fn config_rollback(state: &AppState, username: &str, request_id: &str) -> 
             request_id,
         );
     };
-    let replacements = ["apis", "endpoints", "roles", "groups", "routings"]
-        .into_iter()
-        .map(|collection| {
-            (
-                collection.to_owned(),
-                data.get(collection)
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut replacements = Vec::new();
+    for collection in ["apis", "endpoints", "roles", "groups", "routings"] {
+        let Some(values) = data.get(collection).and_then(Value::as_array) else {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "CFG007",
+                "Configuration snapshot is invalid",
+                request_id,
+            );
+        };
+        replacements.push((collection.to_owned(), values.clone()));
+    }
     if storage
         .replace_collections_atomically(&replacements, None)
         .await
@@ -4149,9 +4580,16 @@ async fn config_rollback(state: &AppState, username: &str, request_id: &str) -> 
         return unexpected(request_id);
     }
     let restored_to = snapshot.get("created_at").cloned().unwrap_or(Value::Null);
+    let snapshot_id = snapshot.get("snapshot_id").cloned().unwrap_or(Value::Null);
+    audit::management_mutation(
+        username,
+        "config.rollback",
+        snapshot_id.as_str().unwrap_or("latest"),
+        "success",
+    );
     success(
         StatusCode::OK,
-        json!({"message": format!("Configuration rolled back to {}", restored_to.as_str().unwrap_or("latest")), "restored_to": restored_to}),
+        json!({"message": format!("Configuration rolled back to {}", restored_to.as_str().unwrap_or("latest")), "restored_to": restored_to, "snapshot_id": snapshot_id}),
         request_id,
     )
 }
@@ -4237,7 +4675,9 @@ fn config_current(state: &AppState, request_id: &str) -> Response {
         json!({
             "config": state.hot_reload.dump(),
             "source": "Environment variables override config file values",
-            "reload_command": "kill -HUP $(cat doorman.pid)"
+            "reloadable_keys": ["GATEWAY_TIMEOUT", "RETRY_ENABLED", "RETRY_MAX_ATTEMPTS"],
+            "restart_required": true,
+            "reload_behavior": "Supported HTTP gateway settings apply to subsequent REST, GraphQL, and SOAP requests; remaining settings require restart"
         }),
         request_id,
     )
@@ -4272,6 +4712,32 @@ fn reloadable_keys() -> Value {
         {"key": "FEATURE_AB_TESTING", "description": "Enable A/B testing", "example": "false"},
         {"key": "FEATURE_COST_ANALYTICS", "description": "Enable cost analytics", "example": "false"}
     ])
+}
+
+fn active_reloadable_keys() -> Value {
+    json!([
+        {"key": "GATEWAY_TIMEOUT", "description": "HTTP gateway timeout in seconds", "example": "30"},
+        {"key": "RETRY_ENABLED", "description": "Enable HTTP gateway retries", "example": "true"},
+        {"key": "RETRY_MAX_ATTEMPTS", "description": "Maximum HTTP gateway attempts", "example": "3"}
+    ])
+}
+
+fn restart_required_keys() -> Value {
+    let active = ["GATEWAY_TIMEOUT", "RETRY_ENABLED", "RETRY_MAX_ATTEMPTS"];
+    Value::Array(
+        reloadable_keys()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|value| {
+                value
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .is_none_or(|key| !active.contains(&key))
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 async fn demo_seed(state: &AppState, username: &str, request_id: &str) -> Response {
@@ -4345,7 +4811,7 @@ fn cors_check(payload: Value, request_id: &str) -> Response {
         .split(',')
         .map(|s| s.trim().to_owned())
         .collect();
-    let allow_credentials = env_bool("ALLOW_CREDENTIALS", false);
+    let allow_credentials = env_bool("ALLOW_CREDENTIALS", true);
     let methods: Vec<String> = env::var("ALLOW_METHODS")
         .unwrap_or_else(|_| "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".to_owned())
         .split(',')
@@ -5517,6 +5983,74 @@ async fn api_discovery_routes(
     )
 }
 
+pub async fn backfill_grpc_descriptors(storage: &SharedStorage) -> DescriptorBackfill {
+    let apis = match storage.find_many("apis", &json!({})).await {
+        Ok(apis) => apis,
+        Err(error_value) => {
+            return DescriptorBackfill {
+                errors: vec![json!({"api": null, "error": error_value.to_string()})],
+                ..DescriptorBackfill::default()
+            };
+        }
+    };
+    let mut backfill = DescriptorBackfill::default();
+    for api in apis {
+        if !api
+            .get("api_type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("GRPC"))
+            || !bool_field_default(&api, "active", true)
+        {
+            continue;
+        }
+        let Some(source) = api.get("api_grpc_proto_source").and_then(Value::as_str) else {
+            continue;
+        };
+        backfill.scanned += 1;
+        if api
+            .get("api_grpc_descriptor_set")
+            .and_then(Value::as_str)
+            .is_some_and(|descriptor| !descriptor.trim().is_empty())
+        {
+            backfill.skipped += 1;
+            continue;
+        }
+        let api_name = api.get("api_name").cloned().unwrap_or(Value::Null);
+        let api_version = api.get("api_version").cloned().unwrap_or(Value::Null);
+        match compile_proto(source) {
+            Ok((descriptor, digest)) => {
+                let filter = json!({"api_name": api_name, "api_version": api_version});
+                match storage
+                    .update_one(
+                        "apis",
+                        &filter,
+                        &json!({
+                            "api_grpc_descriptor_set": descriptor,
+                            "api_grpc_descriptor_sha256": digest,
+                        }),
+                    )
+                    .await
+                {
+                    Ok(Some(_)) => backfill.updated += 1,
+                    Ok(None) => backfill.errors.push(json!({
+                        "api": filter.get("api_name"),
+                        "error": "API disappeared while descriptor backfill was running",
+                    })),
+                    Err(error_value) => backfill.errors.push(json!({
+                        "api": filter.get("api_name"),
+                        "error": error_value.to_string(),
+                    })),
+                }
+            }
+            Err(error_value) => backfill.errors.push(json!({
+                "api": api_name,
+                "error": error_value,
+            })),
+        }
+    }
+    backfill
+}
+
 async fn proto_routes(
     state: &AppState,
     path: &str,
@@ -5538,42 +6072,16 @@ async fn proto_routes(
         return unexpected(request_id);
     };
     if path == "/proto/descriptors/backfill" && method == Method::POST {
-        let apis = storage
-            .find_many("apis", &json!({}))
-            .await
-            .unwrap_or_default();
-        let mut scanned = 0_u64;
-        let mut updated = 0_u64;
-        let mut skipped = 0_u64;
-        let mut errors = Vec::new();
-        for api in apis {
-            let source = api.get("api_grpc_proto_source").and_then(Value::as_str);
-            if source.is_none() {
-                continue;
-            }
-            scanned += 1;
-            if api
-                .get("api_grpc_descriptor_set")
-                .and_then(Value::as_str)
-                .is_some()
-            {
-                skipped += 1;
-                continue;
-            }
-            match compile_proto(source.unwrap()) {
-                Ok((descriptor, digest)) => {
-                    let filter = json!({"api_name": api.get("api_name"), "api_version": api.get("api_version")});
-                    let _ = storage.update_one("apis", &filter, &json!({"api_grpc_descriptor_set": descriptor, "api_grpc_descriptor_sha256": digest})).await;
-                    updated += 1;
-                }
-                Err(error_value) => {
-                    errors.push(json!({"api": api.get("api_name"), "error": error_value}))
-                }
-            }
-        }
+        let backfill = backfill_grpc_descriptors(storage).await;
         return success(
             StatusCode::OK,
-            json!({"scanned": scanned, "updated": updated, "skipped": skipped, "missing": errors.len(), "errors": errors}),
+            json!({
+                "scanned": backfill.scanned,
+                "updated": backfill.updated,
+                "skipped": backfill.skipped,
+                "missing": backfill.missing(),
+                "errors": backfill.errors,
+            }),
             request_id,
         );
     }
@@ -5813,8 +6321,9 @@ fn extract_proto_package(source: &str) -> Option<String> {
 fn compile_proto(source: &str) -> Result<(String, String), String> {
     let directory = std::env::temp_dir().join(format!("doorman-proto-{}", Uuid::new_v4()));
     fs::create_dir_all(&directory).map_err(|error_value| error_value.to_string())?;
-    let source_path = directory.join("api.proto");
-    let descriptor_path = directory.join("api.descriptor.pb");
+    let directory = ProtoCompileDirectory(directory);
+    let source_path = directory.0.join("api.proto");
+    let descriptor_path = directory.0.join("api.descriptor.pb");
     fs::write(&source_path, source).map_err(|error_value| error_value.to_string())?;
     let protoc_res = std::panic::catch_unwind(protoc_bin_vendored::protoc_bin_path);
     let protoc = match protoc_res {
@@ -5822,7 +6331,7 @@ fn compile_proto(source: &str) -> Result<(String, String), String> {
         _ => std::path::PathBuf::from("protoc"),
     };
     let mut cmd = Command::new(&protoc);
-    cmd.arg(format!("--proto_path={}", directory.display()));
+    cmd.arg(format!("--proto_path={}", directory.0.display()));
     if let Ok(Ok(includes)) = std::panic::catch_unwind(protoc_bin_vendored::include_path) {
         if includes.exists() {
             cmd.arg(format!("--proto_path={}", includes.display()));
@@ -5845,11 +6354,9 @@ fn compile_proto(source: &str) -> Result<(String, String), String> {
         .output()
         .map_err(|error_value| error_value.to_string())?;
     if !output.status.success() {
-        let _ = fs::remove_dir_all(&directory);
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
     let bytes = fs::read(&descriptor_path).map_err(|error_value| error_value.to_string())?;
-    let _ = fs::remove_dir_all(&directory);
     use base64::Engine as _;
     use sha2::Digest as _;
     Ok((
@@ -5862,6 +6369,7 @@ async fn logging_routes(
     state: &AppState,
     path: &str,
     method: &Method,
+    query: &HashMap<String, String>,
     username: &str,
     request_id: &str,
 ) -> Response {
@@ -5888,14 +6396,22 @@ async fn logging_routes(
         .logs_dir
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("platform-logs"));
-    let files = fs::read_dir(&directory)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_file())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+    match fs::read_dir(&directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => return unexpected(request_id),
+                };
+                if entry.path().is_file() {
+                    files.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        Err(error_value) if error_value.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return unexpected(request_id),
+    }
     match path {
         "/logging/logs/files" => {
             let count = files.len();
@@ -5905,20 +6421,67 @@ async fn logging_routes(
                 request_id,
             )
         }
-        "/logging/logs/statistics" => {
-            success(StatusCode::OK, json!({"files": files.len()}), request_id)
-        }
+        "/logging/logs/statistics" => match log_statistics(&directory) {
+            Ok(statistics) => success(StatusCode::OK, statistics, request_id),
+            Err(LogExportError::Read) => unexpected(request_id),
+            Err(_) => unexpected(request_id),
+        },
         "/logging/logs" => {
-            let entries = files
-                .iter()
-                .filter_map(|name| fs::read_to_string(directory.join(name)).ok())
-                .flat_map(|content| content.lines().map(str::to_owned).collect::<Vec<_>>())
-                .collect::<Vec<_>>();
-            success(StatusCode::OK, json!({"logs": entries}), request_id)
+            let limit = query
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(100)
+                .clamp(1, 1_000);
+            let offset = query
+                .get("offset")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            match read_log_records(&directory, query, MAX_LOG_EXPORT_ENTRIES) {
+                Ok(entries) => {
+                    let total = entries.len();
+                    let logs = entries
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit)
+                        .collect::<Vec<_>>();
+                    success(
+                        StatusCode::OK,
+                        json!({
+                            "logs": logs,
+                            "total": total,
+                            "has_more": offset.saturating_add(limit) < total,
+                        }),
+                        request_id,
+                    )
+                }
+                Err(_) => unexpected(request_id),
+            }
         }
-        "/logging/logs/export" | "/logging/logs/download" => {
-            success(StatusCode::OK, json!({"files": files}), request_id)
-        }
+        "/logging/logs/export" | "/logging/logs/download" => match log_export(&directory, query) {
+            Ok(export) if path == "/logging/logs/export" => success(
+                StatusCode::OK,
+                json!({
+                    "format": export.format,
+                    "data": export.data,
+                    "filename": export.filename,
+                }),
+                request_id,
+            ),
+            Ok(export) => log_download_response(export, request_id),
+            Err(LogExportError::InvalidFormat) => error(
+                StatusCode::BAD_REQUEST,
+                "LOG005",
+                "Unsupported export format; use json or csv",
+                request_id,
+            ),
+            Err(LogExportError::InvalidDate) => error(
+                StatusCode::BAD_REQUEST,
+                "LOG006",
+                "Invalid export date; use YYYY-MM-DD",
+                request_id,
+            ),
+            Err(LogExportError::Read) => unexpected(request_id),
+        },
         _ => error(
             StatusCode::NOT_FOUND,
             "GTW003",
@@ -5926,6 +6489,361 @@ async fn logging_routes(
             request_id,
         ),
     }
+}
+
+const MAX_LOG_EXPORT_ENTRIES: usize = 10_000;
+const MAX_LOG_EXPORT_BYTES: u64 = 50 * 1024 * 1024;
+
+struct LogExport {
+    format: String,
+    data: String,
+    filename: String,
+}
+
+enum LogExportError {
+    InvalidFormat,
+    InvalidDate,
+    Read,
+}
+
+fn log_export(
+    directory: &std::path::Path,
+    query: &HashMap<String, String>,
+) -> Result<LogExport, LogExportError> {
+    let format = query
+        .get("format")
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "json".to_owned());
+    if !matches!(format.as_str(), "json" | "csv") {
+        return Err(LogExportError::InvalidFormat);
+    }
+    for key in ["start_date", "end_date"] {
+        if let Some(value) = query.get(key)
+            && !valid_log_date(value)
+        {
+            return Err(LogExportError::InvalidDate);
+        }
+    }
+
+    Ok(render_log_export(
+        &format,
+        read_log_records(directory, query, MAX_LOG_EXPORT_ENTRIES)?,
+    ))
+}
+
+fn read_log_records(
+    directory: &std::path::Path,
+    query: &HashMap<String, String>,
+    max_entries: usize,
+) -> Result<Vec<Value>, LogExportError> {
+    let mut paths = Vec::new();
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error_value) if error_value.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(_) => return Err(LogExportError::Read),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| LogExportError::Read)?;
+        let file_type = entry.file_type().map_err(|_| LogExportError::Read)?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|_| LogExportError::Read)?;
+        paths.push((
+            metadata.modified().unwrap_or(UNIX_EPOCH),
+            metadata.len(),
+            entry.path(),
+        ));
+    }
+    paths.sort_by(|left, right| right.0.cmp(&left.0));
+
+    let mut read_bytes = 0_u64;
+    let mut logs = Vec::new();
+    for (_, size, path) in paths {
+        read_bytes = read_bytes.saturating_add(size);
+        if read_bytes > MAX_LOG_EXPORT_BYTES {
+            return Err(LogExportError::Read);
+        }
+        let content = fs::read_to_string(path).map_err(|_| LogExportError::Read)?;
+        for line in content.lines() {
+            let Some(mut record) = parse_log_record(line) else {
+                continue;
+            };
+            if log_record_matches(&record, query) {
+                audit::redact_record(&mut record);
+                logs.push(record);
+                if logs.len() >= max_entries {
+                    break;
+                }
+            }
+        }
+        if logs.len() >= max_entries {
+            break;
+        }
+    }
+    logs.sort_by(|left, right| {
+        right
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .cmp(&left.get("timestamp").and_then(Value::as_str))
+    });
+    Ok(logs)
+}
+
+fn log_statistics(directory: &std::path::Path) -> Result<Value, LogExportError> {
+    let logs = read_log_records(directory, &HashMap::new(), MAX_LOG_EXPORT_ENTRIES)?;
+    let mut error_count = 0_u64;
+    let mut warning_count = 0_u64;
+    let mut info_count = 0_u64;
+    let mut debug_count = 0_u64;
+    let mut response_time_total = 0_f64;
+    let mut response_time_count = 0_u64;
+    let mut apis = HashMap::new();
+    let mut users = HashMap::new();
+    let mut endpoints = HashMap::new();
+    for record in &logs {
+        match record
+            .get("level")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .as_str()
+        {
+            "ERROR" => error_count += 1,
+            "WARNING" | "WARN" => warning_count += 1,
+            "INFO" => info_count += 1,
+            "DEBUG" => debug_count += 1,
+            _ => {}
+        }
+        if let Some(response_time) = record.get("response_time").and_then(log_number) {
+            response_time_total += response_time;
+            response_time_count += 1;
+        }
+        increment_log_stat(&mut apis, record, "api");
+        increment_log_stat(&mut users, record, "user");
+        increment_log_stat(&mut endpoints, record, "endpoint");
+    }
+    let average = if response_time_count == 0 {
+        0.0
+    } else {
+        (response_time_total / response_time_count as f64 * 100.0).round() / 100.0
+    };
+    Ok(json!({
+        "total_logs": logs.len(),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "info_count": info_count,
+        "debug_count": debug_count,
+        "avg_response_time": average,
+        "top_apis": top_log_statistics(apis),
+        "top_users": top_log_statistics(users),
+        "top_endpoints": top_log_statistics(endpoints),
+    }))
+}
+
+fn log_number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
+        .filter(|value| value.is_finite())
+}
+
+fn increment_log_stat(counts: &mut HashMap<String, u64>, record: &Value, key: &str) {
+    let Some(value) = record.get(key).and_then(Value::as_str) else {
+        return;
+    };
+    if !value.is_empty() {
+        *counts.entry(value.to_owned()).or_default() += 1;
+    }
+}
+
+fn top_log_statistics(counts: HashMap<String, u64>) -> Vec<Value> {
+    let mut entries = counts.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    entries
+        .into_iter()
+        .take(10)
+        .map(|(name, count)| json!({"name": name, "count": count}))
+        .collect()
+}
+
+fn valid_log_date(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+}
+
+fn parse_log_record(line: &str) -> Option<Value> {
+    let mut record = serde_json::from_str::<Value>(line).ok()?;
+    let values = record.as_object_mut()?;
+    let timestamp = values
+        .remove("time")
+        .or_else(|| values.get("timestamp").cloned())?;
+    let source = values
+        .remove("name")
+        .unwrap_or(Value::String(String::new()));
+    values.insert("timestamp".to_owned(), timestamp);
+    values.insert("source".to_owned(), source);
+    Some(record)
+}
+
+fn log_record_matches(record: &Value, query: &HashMap<String, String>) -> bool {
+    let value = |key: &str| record.get(key).and_then(Value::as_str).unwrap_or_default();
+    if let Some(start_date) = query.get("start_date")
+        && value("timestamp").get(..10).unwrap_or_default() < start_date.as_str()
+    {
+        return false;
+    }
+    if let Some(end_date) = query.get("end_date")
+        && value("timestamp").get(..10).unwrap_or_default() > end_date.as_str()
+    {
+        return false;
+    }
+    for key in [
+        "user",
+        "api",
+        "endpoint",
+        "request_id",
+        "method",
+        "ip_address",
+        "level",
+        "type",
+    ] {
+        let Some(expected) = query.get(key) else {
+            continue;
+        };
+        if key == "level" {
+            if !value(key).eq_ignore_ascii_case(expected) {
+                return false;
+            }
+        } else if value(key) != expected {
+            return false;
+        }
+    }
+    let response_time = record.get("response_time").and_then(log_number);
+    if let Some(minimum) = query
+        .get("min_response_time")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        && response_time.is_none_or(|value| value < minimum)
+    {
+        return false;
+    }
+    if let Some(maximum) = query
+        .get("max_response_time")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        && response_time.is_none_or(|value| value > maximum)
+    {
+        return false;
+    }
+    true
+}
+
+fn render_log_export(format: &str, logs: Vec<Value>) -> LogExport {
+    let timestamp = time::OffsetDateTime::now_utc();
+    let stamp = format!(
+        "{:04}{:02}{:02}_{:02}{:02}{:02}",
+        timestamp.year(),
+        u8::from(timestamp.month()),
+        timestamp.day(),
+        timestamp.hour(),
+        timestamp.minute(),
+        timestamp.second(),
+    );
+    let (data, extension) = if format == "csv" {
+        (render_log_csv(&logs), "csv")
+    } else {
+        (
+            serde_json::to_string_pretty(&logs).unwrap_or_else(|_| "[]".to_owned()),
+            "json",
+        )
+    };
+    LogExport {
+        format: format.to_owned(),
+        data,
+        filename: format!("logs_export_{stamp}.{extension}"),
+    }
+}
+
+fn render_log_csv(logs: &[Value]) -> String {
+    const COLUMNS: [&str; 15] = [
+        "timestamp",
+        "level",
+        "message",
+        "source",
+        "user",
+        "api",
+        "endpoint",
+        "method",
+        "status_code",
+        "response_time",
+        "ip_address",
+        "protocol",
+        "request_id",
+        "group",
+        "role",
+    ];
+    let mut output = COLUMNS.join(",");
+    output.push('\n');
+    for record in logs {
+        let values = COLUMNS.map(|column| {
+            record
+                .get(column)
+                .map(|value| match value {
+                    Value::String(value) => value.clone(),
+                    value => value.to_string(),
+                })
+                .unwrap_or_default()
+        });
+        for (index, value) in values.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            output.push('"');
+            output.push_str(&value.replace('"', "\"\""));
+            output.push('"');
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn log_download_response(export: LogExport, request_id: &str) -> Response {
+    let content_type = if export.format == "csv" {
+        "text/csv; charset=utf-8"
+    } else {
+        "application/json"
+    };
+    let length = export.data.len().to_string();
+    let mut response = (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, content_type)],
+        Body::from(export.data),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename={}", export.filename)) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(request_id) {
+        response.headers_mut().insert("request_id", value.clone());
+        response.headers_mut().insert("x-request-id", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&length) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, value.clone());
+        response.headers_mut().insert("x-body-length", value);
+    }
+    response
 }
 
 async fn discovery_parse(
@@ -6047,19 +6965,26 @@ fn password_hash(user: &Value) -> Option<String> {
         Value::Array(values) => String::from_utf8(
             values
                 .iter()
-                .filter_map(Value::as_u64)
-                .map(|value| value as u8)
-                .collect(),
+                .map(|value| u8::try_from(value.as_u64()?).ok())
+                .collect::<Option<Vec<_>>>()?,
         )
         .ok(),
-        Value::Object(map) => map
-            .get("$binary")
-            .and_then(|binary| binary.get("base64"))
-            .and_then(Value::as_str)
-            .and_then(|raw| {
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw).ok()
-            })
-            .and_then(|bytes| String::from_utf8(bytes).ok()),
+        Value::Object(map) => {
+            // Python DMP1 snapshots tag bytes separately from MongoDB's
+            // Extended JSON binary representation. Preserve both formats so
+            // existing users can log in without rewriting password hashes.
+            let encoded = if map.get("__type__").and_then(Value::as_str) == Some("bytes") {
+                map.get("data")
+            } else {
+                map.get("$binary").and_then(|binary| binary.get("base64"))
+            };
+            encoded
+                .and_then(Value::as_str)
+                .and_then(|raw| {
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw).ok()
+                })
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        }
         _ => None,
     }
 }
@@ -6248,25 +7173,28 @@ async fn auth_ip_rate_limit(
         return None;
     }
     let storage = state.storage.as_ref()?;
-    let client_ip = state
-        .config
-        .shared_storage
-        .trust_x_forwarded_for
-        .then(|| {
-            ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"]
-                .into_iter()
-                .find_map(|name| {
-                    headers
-                        .get(name)
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.split(',').next())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned)
-                })
-        })
-        .flatten()
-        .or_else(|| direct_addr.map(|value| value.ip().to_string()))?;
+    let settings = match storage.find_one("settings", &json!({})).await {
+        Ok(settings) => settings,
+        Err(_) => {
+            return Some(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SEC012",
+                "Security policy is temporarily unavailable",
+                request_id,
+            ));
+        }
+    };
+    let client_ip = effective_client_ip_for_settings(
+        settings.as_ref(),
+        headers,
+        direct_addr.map(|addr| addr.ip()),
+        settings
+            .as_ref()
+            .and_then(|settings| settings.get("trust_x_forwarded_for"))
+            .and_then(Value::as_bool)
+            .unwrap_or(state.config.shared_storage.trust_x_forwarded_for),
+    )
+    .map(|ip| ip.to_string())?;
     let limit = env::var(limit_name)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -6278,10 +7206,20 @@ async fn auth_ip_rate_limit(
         .max(1);
     let now = unix_seconds();
     let bucket = now / window;
-    let count = storage
+    let count = match storage
         .increment_window(&format!("ip_rate_limit:{client_ip}:{bucket}"), window)
         .await
-        .ok()?;
+    {
+        Ok(count) => count,
+        Err(_) => {
+            return Some(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SEC012",
+                "Security policy is temporarily unavailable",
+                request_id,
+            ));
+        }
+    };
     if count <= limit {
         return None;
     }

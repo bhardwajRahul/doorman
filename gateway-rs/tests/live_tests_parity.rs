@@ -28,6 +28,150 @@ async fn test_app_state() -> AppState {
     test_app_state_with(|_| {}).await
 }
 
+#[tokio::test]
+async fn hot_reload_changes_retry_and_timeout_on_real_http_requests() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_url = format!("http://{}", listener.local_addr().unwrap());
+    let counter = attempts.clone();
+    let upstream = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route(
+                    "/retry",
+                    any(move || {
+                        let counter = counter.clone();
+                        async move {
+                            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            } else {
+                                StatusCode::OK
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/slow",
+                    any(|| async {
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
+                        StatusCode::OK
+                    }),
+                ),
+        )
+        .await
+        .unwrap();
+    });
+    let directory =
+        std::env::temp_dir().join(format!("doorman-http-reload-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("config.json");
+    std::fs::write(&path, "{}").unwrap();
+    let mut state = test_app_state().await;
+    state.hot_reload = Arc::new(doorman_gateway::hot_reload::HotReloadConfig::new(Some(
+        path.clone(),
+    )));
+    let storage = state.storage.as_ref().unwrap();
+    storage.insert_one("apis", json!({"api_id":"reload-api","api_name":"reload","api_version":"v1","api_type":"REST","api_public":true,"api_servers":[upstream_url],"api_allowed_retry_count":0,"api_read_timeout":3})).await.unwrap();
+    for endpoint in ["/retry", "/slow"] {
+        storage.insert_one("endpoints", json!({"api_name":"reload","api_version":"v1","endpoint_method":"GET","endpoint_uri":endpoint})).await.unwrap();
+    }
+    let app = build_router(state);
+    let token = login_admin(&app).await;
+    assert_eq!(
+        public_gateway_status(
+            &app,
+            Method::GET,
+            "/api/rest/reload/v1/retry",
+            None,
+            Body::empty()
+        )
+        .await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    std::fs::write(&path, r#"{"retry":{"enabled":true,"max_attempts":2}}"#).unwrap();
+    assert_eq!(
+        authed_json_response(
+            &app,
+            &token,
+            Method::POST,
+            "/platform/config/reload",
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    attempts.store(0, Ordering::SeqCst);
+    assert_eq!(
+        public_gateway_status(
+            &app,
+            Method::GET,
+            "/api/rest/reload/v1/retry",
+            None,
+            Body::empty()
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        public_gateway_status(
+            &app,
+            Method::GET,
+            "/api/rest/reload/v1/slow",
+            None,
+            Body::empty()
+        )
+        .await,
+        StatusCode::OK
+    );
+    std::fs::write(
+        &path,
+        r#"{"gateway":{"timeout":1},"retry":{"enabled":false,"max_attempts":2}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        authed_json_response(
+            &app,
+            &token,
+            Method::POST,
+            "/platform/config/reload",
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    attempts.store(0, Ordering::SeqCst);
+    assert_eq!(
+        public_gateway_status(
+            &app,
+            Method::GET,
+            "/api/rest/reload/v1/retry",
+            None,
+            Body::empty()
+        )
+        .await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        public_gateway_status(
+            &app,
+            Method::GET,
+            "/api/rest/reload/v1/slow",
+            None,
+            Body::empty()
+        )
+        .await,
+        StatusCode::GATEWAY_TIMEOUT
+    );
+    upstream.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 async fn test_app_state_with(configure: impl FnOnce(&mut Config)) -> AppState {
     let mut config = Config::for_test("removed-internal-backend".to_owned());
     config.https_only = false;

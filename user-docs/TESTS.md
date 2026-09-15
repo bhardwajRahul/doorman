@@ -60,6 +60,9 @@ passing Python-versus-Rust performance report, and the log from the isolated
 MongoDB/Redis suite. The final check is intentionally fail-closed:
 
 ```bash
+EXTERNAL_STORAGE_LOG=release-evidence/external-storage.log \
+  bash scripts/run_external_storage_tests.sh
+
 ENV=production MEM_OR_EXTERNAL=REDIS \
 HTTPS_ONLY=true CORS_STRICT=true LOCAL_HOST_IP_BYPASS=false \
 DOORMAN_ADMIN_EMAIL=admin@example.com \
@@ -90,7 +93,7 @@ zero-difference report from being used as release evidence.
 
 `operations.json` is the signed-off record produced from the release runbook.
 It must be a schema-version-1 JSON object with each of these fields set to
-`{"passed": true}`: `image_smoke`, `restore_rehearsal`, `canary`, and
+`{"passed": true}`: `image_smoke`, `restore_rehearsal`, `cutover`, and
 `rollback`. The checker rejects an incomplete or failed rehearsal record.
 
 The performance report must come from `make parity-performance` using four

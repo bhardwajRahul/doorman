@@ -8,7 +8,9 @@ use std::{
 };
 
 use reqwest::{Client, redirect::Policy};
+use serde_json::Value;
 use thiserror::Error;
+use tokio::sync::watch;
 
 use crate::{
     config::Config,
@@ -54,10 +56,75 @@ pub struct GatewayRuntime {
     pub upstream_timeouts_total: AtomicU64,
     pub memory_snapshot_healthy: AtomicBool,
     pub metrics_persistence_healthy: AtomicBool,
+    pub revocation_purge_healthy: AtomicBool,
+    pub activity_log_healthy: AtomicBool,
+    pub security_audit_log_healthy: AtomicBool,
+    memory_autosave_updates: watch::Sender<MemoryAutosaveConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryAutosaveConfig {
+    pub enabled: bool,
+    pub frequency_seconds: u64,
+    pub dump_path: Option<String>,
+}
+
+impl MemoryAutosaveConfig {
+    pub fn from_settings(settings: Option<&Value>) -> Self {
+        let mut config = Self::default();
+        let Some(settings) = settings else {
+            return config;
+        };
+        if let Some(enabled) = settings.get("enable_auto_save").and_then(Value::as_bool) {
+            config.enabled = enabled;
+        }
+        if let Some(frequency_seconds) = settings
+            .get("auto_save_frequency_seconds")
+            .and_then(Value::as_u64)
+            .filter(|value| *value >= 60)
+        {
+            config.frequency_seconds = frequency_seconds;
+        }
+        if let Some(path) = settings
+            .get("dump_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+        {
+            config.dump_path = Some(path.to_owned());
+        }
+        config
+    }
+}
+
+impl Default for MemoryAutosaveConfig {
+    fn default() -> Self {
+        let enabled = std::env::var("MEM_AUTO_SAVE_ENABLED")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+        let frequency_seconds = std::env::var("MEM_AUTO_SAVE_FREQ")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value >= 60)
+            .unwrap_or(900);
+        let dump_path = std::env::var("MEM_DUMP_PATH")
+            .ok()
+            .filter(|path| !path.trim().is_empty());
+        Self {
+            enabled,
+            frequency_seconds,
+            dump_path,
+        }
+    }
 }
 
 impl Default for GatewayRuntime {
     fn default() -> Self {
+        let (memory_autosave_updates, _) = watch::channel(MemoryAutosaveConfig::default());
         Self {
             started_at: Instant::now(),
             active_requests: AtomicU64::new(0),
@@ -72,7 +139,21 @@ impl Default for GatewayRuntime {
             upstream_timeouts_total: AtomicU64::new(0),
             memory_snapshot_healthy: AtomicBool::new(true),
             metrics_persistence_healthy: AtomicBool::new(true),
+            revocation_purge_healthy: AtomicBool::new(true),
+            activity_log_healthy: AtomicBool::new(true),
+            security_audit_log_healthy: AtomicBool::new(true),
+            memory_autosave_updates,
         }
+    }
+}
+
+impl GatewayRuntime {
+    pub fn memory_autosave_config(&self) -> watch::Receiver<MemoryAutosaveConfig> {
+        self.memory_autosave_updates.subscribe()
+    }
+
+    pub fn update_memory_autosave_config(&self, config: MemoryAutosaveConfig) {
+        self.memory_autosave_updates.send_replace(config);
     }
 }
 

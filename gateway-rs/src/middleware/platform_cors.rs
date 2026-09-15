@@ -96,7 +96,7 @@ impl PlatformCorsConfig {
         Self {
             strict: bool_value(strict, true),
             origins,
-            credentials: bool_value(credentials, false),
+            credentials: bool_value(credentials, true),
             methods,
             headers,
         }
@@ -197,6 +197,21 @@ fn bool_value(value: Option<&str>, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_default_matches_python_and_can_be_disabled() {
+        for (value, expected) in [(None, true), (Some("false"), false)] {
+            let config = PlatformCorsConfig::from_values(None, value, None, None, None);
+            let mut headers = HeaderMap::new();
+            apply_headers(&mut headers, &config, None, false);
+            assert_eq!(
+                headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+                expected
+            );
+            // Credential support does not authorize an unlisted origin.
+            assert!(!config.origin_allowed("https://evil.example"));
+        }
+    }
 
     #[test]
     fn strict_wildcard_allows_only_local_origins_with_credentials() {

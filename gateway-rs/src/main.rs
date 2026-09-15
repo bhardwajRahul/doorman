@@ -7,8 +7,10 @@ use std::{
 
 use doorman_gateway::{
     AppState, Config, build_router,
+    hot_reload::HotReloadConfig,
     observability::analytics_aggregator::global_analytics,
-    state::GatewayRuntime,
+    routes::platform::backfill_grpc_descriptors,
+    state::{GatewayRuntime, MemoryAutosaveConfig},
     storage::{runtime::SharedStorage, snapshot},
 };
 use tokio::net::TcpListener;
@@ -25,8 +27,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = state.storage.clone();
     spawn_metrics_autosave(state.runtime.clone());
 
+    if let Some(storage) = storage.as_ref().filter(|storage| !storage.is_memory()) {
+        let backfill = backfill_grpc_descriptors(storage).await;
+        if backfill.missing() > 0 {
+            warn!(
+                scanned = backfill.scanned,
+                updated = backfill.updated,
+                skipped = backfill.skipped,
+                missing = backfill.missing(),
+                "gRPC descriptor backfill completed with failures; readiness will remain degraded for affected APIs"
+            );
+        } else {
+            info!(
+                scanned = backfill.scanned,
+                updated = backfill.updated,
+                skipped = backfill.skipped,
+                "gRPC descriptor backfill completed"
+            );
+        }
+    }
+
     if let Some(storage) = storage.as_ref().filter(|storage| storage.is_memory()) {
-        match snapshot::restore(storage, None).await {
+        match snapshot::restore_latest(storage, None).await {
             Ok((version, created_at)) => info!(version, created_at, "restored memory snapshot"),
             Err(snapshot::SnapshotError::Io(error_value))
                 if error_value.kind() == std::io::ErrorKind::NotFound =>
@@ -41,10 +63,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(error_value.into());
             }
         }
+        match storage.find_one("settings", &serde_json::json!({})).await {
+            Ok(settings) => {
+                state
+                    .runtime
+                    .update_memory_autosave_config(MemoryAutosaveConfig::from_settings(
+                        settings.as_ref(),
+                    ))
+            }
+            Err(error_value) => {
+                warn!(error = %error_value, "could not load persisted memory autosave settings; using environment defaults")
+            }
+        }
         spawn_memory_autosave(storage.clone(), state.runtime.clone());
         spawn_sigusr1_dump(storage.clone());
     }
 
+    // Memory snapshots are restored above, so the first purge sees the same
+    // records that will serve traffic. External storage has no restore phase.
+    if let Some(storage) = &storage {
+        run_revocation_purge(storage, &state.runtime).await;
+        spawn_revocation_purger(storage.clone(), state.runtime.clone());
+    }
+
+    spawn_sighup_reload(state.hot_reload.clone());
     let app = build_router(state);
     let listener = TcpListener::bind(&bind_addr).await?;
 
@@ -58,11 +100,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_memory_autosave(storage: Arc<SharedStorage>, runtime: Arc<GatewayRuntime>) {
-    if !env_bool("MEM_AUTO_SAVE_ENABLED", true) || env::var("MEM_ENCRYPTION_KEY").is_err() {
-        return;
+#[cfg(unix)]
+fn spawn_sighup_reload(config: Arc<HotReloadConfig>) {
+    tokio::spawn(async move {
+        let mut signal = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        {
+            Ok(signal) => signal,
+            Err(error_value) => {
+                warn!(error = %error_value, "failed to register SIGHUP configuration reload handler");
+                return;
+            }
+        };
+        while signal.recv().await.is_some() {
+            match config.reload() {
+                Ok(()) => info!("configuration reloaded from SIGHUP"),
+                Err(error_value) => {
+                    error!(error = %error_value, "SIGHUP configuration reload failed; retaining prior configuration")
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_sighup_reload(_config: Arc<HotReloadConfig>) {}
+
+async fn run_revocation_purge(storage: &SharedStorage, runtime: &GatewayRuntime) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    match storage.purge_expired_revocations(now).await {
+        Ok(removed) => {
+            runtime
+                .revocation_purge_healthy
+                .store(true, Ordering::Relaxed);
+            if removed > 0 {
+                info!(removed, "purged expired token revocations");
+            }
+        }
+        Err(error_value) => {
+            runtime
+                .revocation_purge_healthy
+                .store(false, Ordering::Relaxed);
+            error!(error = %error_value, "expired token revocation purge failed");
+        }
     }
-    let seconds = env::var("MEM_AUTO_SAVE_FREQ")
+}
+
+fn spawn_revocation_purger(storage: Arc<SharedStorage>, runtime: Arc<GatewayRuntime>) {
+    let seconds = env::var("REVOCATION_PURGE_INTERVAL_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(300)
@@ -72,7 +159,39 @@ fn spawn_memory_autosave(storage: Arc<SharedStorage>, runtime: Arc<GatewayRuntim
         interval.tick().await;
         loop {
             interval.tick().await;
-            match snapshot::dump(&storage, None).await {
+            run_revocation_purge(&storage, &runtime).await;
+        }
+    });
+}
+
+fn spawn_memory_autosave(storage: Arc<SharedStorage>, runtime: Arc<GatewayRuntime>) {
+    let mut updates = runtime.memory_autosave_config();
+    tokio::spawn(async move {
+        loop {
+            let config = updates.borrow_and_update().clone();
+            if !config.enabled {
+                if updates.changed().await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            if env::var("MEM_ENCRYPTION_KEY").is_err() {
+                runtime
+                    .memory_snapshot_healthy
+                    .store(false, Ordering::Relaxed);
+                error!("memory autosave enabled without MEM_ENCRYPTION_KEY");
+                if updates.changed().await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            tokio::select! {
+                changed = updates.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(config.frequency_seconds.max(60))) => match snapshot::dump(&storage, config.dump_path.as_deref()).await {
                 Ok(path) => {
                     runtime
                         .memory_snapshot_healthy
@@ -84,6 +203,7 @@ fn spawn_memory_autosave(storage: Arc<SharedStorage>, runtime: Arc<GatewayRuntim
                         .memory_snapshot_healthy
                         .store(false, Ordering::Relaxed);
                     error!(error = %error_value, "memory autosave failed");
+                }
                 }
             }
         }
@@ -200,16 +320,4 @@ fn spawn_metrics_autosave(runtime: Arc<GatewayRuntime>) {
                 .store(persist_metrics(), Ordering::Relaxed);
         }
     });
-}
-
-fn env_bool(name: &str, default: bool) -> bool {
-    env::var(name)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(default)
 }

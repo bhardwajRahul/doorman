@@ -1,6 +1,104 @@
 {
   "schema_version": 1,
   "entries": {
+    "backend-services/tests/test_memory_dump_util_extended.py::test_dump_file_naming_and_dir_creation": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::dump_file_naming_and_directory_creation_match_python"
+      ],
+      "notes": "Creates an encrypted dump in a previously absent nested directory, checks the timestamped filename, and resolves that same latest dump."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_dump_with_directory_hint_uses_default_stem": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::dump_directory_hint_uses_python_default_stem"
+      ],
+      "notes": "Writes an actual dump using an existing directory hint and asserts the memory_dump filename stem and latest-file lookup."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_find_latest_prefers_newest_by_stem": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::find_latest_prefers_newest_matching_stem_by_modification_time"
+      ],
+      "notes": "Selects the newest matching dump by file modification time, ignoring unrelated stems and misleading timestamp names."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_find_latest_ignores_other_stems_when_dir_hint": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::find_latest_directory_hint_ignores_other_stems_with_or_without_slash"
+      ],
+      "notes": "Directory hints select memory_dump files even when another stem has a newer modification time; tests with and without trailing slash."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_find_latest_uses_default_when_no_hint": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::find_latest_uses_default_when_no_hint"
+      ],
+      "notes": "The production lookup helper, given the configured default path and no hint, returns the newest matching dump."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_encrypt_decrypt_roundtrip": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::encrypt_decrypt_roundtrip_matches_python"
+      ],
+      "notes": "The production DMP1 encrypt/decrypt functions round-trip the pinned hello-world plaintext and assert the DMP1 magic."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_encrypt_requires_sufficient_key": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::encryption_requires_eight_characters_like_python"
+      ],
+      "notes": "Rejects missing or short key material and verifies the Python character-count rule for Unicode keys."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_restore_nonexistent_file_raises": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::restore_nonexistent_file_does_not_fall_back_or_mutate_data"
+      ],
+      "notes": "Exact-file restore raises NotFound despite a same-stem backup and preserves current data."
+    },
+    "backend-services/tests/test_memory_dump_util_extended.py::test_dump_fails_with_short_key": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::dump_rejects_short_key_without_creating_a_file"
+      ],
+      "notes": "Production dump path rejects a short key and creates neither a file nor the nested destination directory."
+    },
+    "backend-services/tests/test_security_and_metrics.py::test_memory_dump_and_restore": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::failed_restore_is_atomic_and_exact_file_restore_succeeds"
+      ],
+      "notes": "Inserts a user, writes an encrypted dump, finds it from a directory hint, clears users, and restores the exact saved collection; additionally verifies wrong-key and tamper failures preserve current state."
+    },
+    "backend-services/tests/test_memory_dump_restore_permissions.py::test_memory_dump_restore_permissions": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
+      "notes": "Creates limited and manage_security users through HTTP; asserts limited dump/restore are 403 and a security manager can dump to a custom path and restore the resulting file."
+    },
+    "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_memory_dump_requires_key_then_succeeds": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
+      "notes": "Separate environment-isolated processes prove missing-key dump is 400/MEM002 and configured-key dump is 200 with an existing .bin path."
+    },
+    "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_memory_restore_404_missing": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
+      "notes": "Authenticated exact-file restore of a missing path returns 404/MEM003 even with another same-stem snapshot present."
+    },
+    "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_memory_dump_then_restore_flow": {
+      "status": "covered",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
+      "notes": "Creates e2euser through HTTP, dumps, deletes and verifies absence, restores the dump, and retrieves and logs in as the recovered user."
+    },
     "backend-services/live-tests/test_00_health_auth.py::test_status_ok": {
       "status": "covered",
       "rust_tests": [

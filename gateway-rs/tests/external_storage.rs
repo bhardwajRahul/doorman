@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 use tower::ServiceExt;
 use uuid::Uuid;
+mod common;
 
 fn enabled() -> bool {
     std::env::var("DOORMAN_EXTERNAL_STORAGE_TEST").as_deref() == Ok("1")
@@ -45,6 +46,50 @@ async fn external_storage_shares_mongo_documents_and_redis_state() {
     let first = SharedStorage::connect(&config).await.unwrap();
     let second = SharedStorage::connect(&config).await.unwrap();
     assert!(!first.is_memory());
+    // Seed the BSON identifier representation used by existing Python data.
+    let mongo = mongodb::Client::with_uri_str(config.mongo_uri())
+        .await
+        .unwrap();
+    let legacy_id = mongodb::bson::oid::ObjectId::new();
+    mongo.database(&config.mongo_database).collection::<mongodb::bson::Document>("apis")
+        .insert_one(mongodb::bson::doc! {"_id": legacy_id, "api_name":"python-bson-api", "api_version":"v1", "api_id":"legacy-stable"}).await.unwrap();
+    let legacy = first
+        .find_one("apis", &json!({"api_name":"python-bson-api"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let id_filter = json!({"_id": legacy["_id"]});
+    assert!(
+        first
+            .update_one(
+                "apis",
+                &id_filter,
+                &json!({"api_description":"updated by Rust"})
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+    common::assert_configuration_import_merges_without_data_loss(&first).await;
+    let native = mongo
+        .database(&config.mongo_database)
+        .collection::<mongodb::bson::Document>("apis")
+        .find_one(mongodb::bson::doc! {"_id": legacy_id})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(native.get_str("api_id").unwrap(), "legacy-stable");
+    assert_eq!(
+        native.get_str("api_description").unwrap(),
+        "updated by Rust"
+    );
+    // Rollback uses the same BSON-preserving replacement boundary.
+    let records = first.find_many("apis", &json!({})).await.unwrap();
+    first
+        .replace_collections_atomically(&[("apis".to_owned(), records)], None)
+        .await
+        .unwrap();
+    assert!(first.find_one("apis", &id_filter).await.unwrap().is_some());
     let marker = format!("external-{nonce}");
     first
         .insert_one("apis", json!({"api_name": marker, "api_version": "v1"}))
@@ -114,6 +159,15 @@ async fn external_revocation_is_shared_and_expired_record_is_removed() {
 
     let first = SharedStorage::connect(&storage_config).await.unwrap();
     let second = SharedStorage::connect(&storage_config).await.unwrap();
+    common::assert_revocation_purge_preserves_active_and_revoke_all(&first).await;
+    assert_eq!(
+        second
+            .find_many("revocations", &json!({"username": "purge-test"}))
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
     let username = format!("external-auth-{nonce}");
     let password = "ExternalPassword123!";
     first

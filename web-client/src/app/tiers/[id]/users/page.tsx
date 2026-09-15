@@ -70,7 +70,7 @@ export default function TierUsersPage() {
       
       // Fetch users assigned to this tier
       const assignmentsData = await getJson(`${SERVER_URL}/platform/tiers/${tierId}/users`)
-      setAssignments(assignmentsData || [])
+      setAssignments(Array.isArray(assignmentsData) ? assignmentsData : (assignmentsData?.users || []))
       
       setError(null)
     } catch (err: any) {

@@ -158,6 +158,10 @@ pub async fn track_active_requests(
 
     if let Some(logs_dir) = state.config.logs_dir.as_deref() {
         let endpoint = context.endpoint.as_deref().unwrap_or(&path);
+        let upstream = context
+            .upstream
+            .as_deref()
+            .map(crate::observability::audit::redacted_upstream);
         let record = ActivityRecord {
             time: OffsetDateTime::now_utc()
                 .format(&Rfc3339)
@@ -181,15 +185,33 @@ pub async fn track_active_requests(
             bytes_out,
             user: context.username.as_deref(),
             api: context.api.as_deref(),
-            upstream: context.upstream.as_deref(),
+            upstream: upstream.as_deref(),
             ip_address: direct_ip,
         };
         if let Err(error) = append_record(logs_dir, "doorman.log.rust", &record).await {
+            state
+                .runtime
+                .activity_log_healthy
+                .store(false, Ordering::Relaxed);
             tracing::warn!(error = %error, "failed to append gateway activity log");
+        } else {
+            state
+                .runtime
+                .activity_log_healthy
+                .store(true, Ordering::Relaxed);
         }
         if status == 401 || status == 403 || status == 429 || status >= 500 {
             if let Err(error) = append_record(logs_dir, "doorman-trail.log.rust", &record).await {
+                state
+                    .runtime
+                    .security_audit_log_healthy
+                    .store(false, Ordering::Relaxed);
                 tracing::warn!(error = %error, "failed to append gateway audit log");
+            } else {
+                state
+                    .runtime
+                    .security_audit_log_healthy
+                    .store(true, Ordering::Relaxed);
             }
         }
     }

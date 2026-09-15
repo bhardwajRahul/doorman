@@ -15,6 +15,76 @@ use tower::ServiceExt;
 use tracing::instrument::WithSubscriber;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
+mod common;
+
+#[tokio::test]
+async fn restored_python_and_mongo_password_bytes_support_login() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let state = memory_state(false).await;
+    let storage = state.storage.as_ref().unwrap();
+    let original = storage.dump_memory_data().await.unwrap();
+    let hash = bcrypt::hash(fixture_password(), bcrypt::DEFAULT_COST).unwrap();
+    let encoded = STANDARD.encode(hash.as_bytes());
+    for password in [
+        json!({"__type__": "bytes", "data": encoded}),
+        json!({"$binary": {"base64": encoded, "subType": "00"}}),
+        json!(hash.as_bytes()),
+    ] {
+        let mut restored = original.clone();
+        restored.get_mut("users").unwrap()[0]["password"] = password;
+        storage.restore_memory_data(restored).await.unwrap();
+        let app = build_router(state.clone());
+        let (cookie, _) = login(&app).await;
+        let response = platform_request(
+            &app,
+            Method::GET,
+            "/platform/authorization/status",
+            Some(&cookie),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    for password in [
+        json!({"__type__": "bytes", "data": "not-base64"}),
+        json!({"__type__": "unknown", "data": encoded}),
+        json!([256, "invalid"]),
+    ] {
+        let mut restored = original.clone();
+        restored.get_mut("users").unwrap()[0]["password"] = password;
+        storage.restore_memory_data(restored).await.unwrap();
+        let response = platform_request(
+            &build_router(state.clone()),
+            Method::POST,
+            "/platform/authorization",
+            None,
+            None,
+            Some(json!({"email": "admin@doorman.dev", "password": fixture_password()})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["error_code"], "AUTH002");
+    }
+}
+
+#[tokio::test]
+async fn configuration_import_merges_without_data_loss_in_memory() {
+    let state = memory_state(false).await;
+    common::assert_configuration_import_merges_without_data_loss(state.storage.as_ref().unwrap())
+        .await;
+}
+
+#[tokio::test]
+async fn revocation_purge_preserves_active_and_revoke_all_in_memory() {
+    let state = memory_state(false).await;
+    common::assert_revocation_purge_preserves_active_and_revoke_all(
+        state.storage.as_ref().unwrap(),
+    )
+    .await;
+}
+
 fn fixture_password() -> &'static str {
     static PASSWORD: OnceLock<String> = OnceLock::new();
     PASSWORD.get_or_init(random_password).as_str()
@@ -912,7 +982,7 @@ async fn user_managers_cannot_assign_or_escalate_to_admin() {
 }
 
 #[tokio::test]
-async fn platform_preflight_is_public_with_safe_defaults() {
+async fn platform_preflight_is_public_with_python_credentials_default() {
     let app = build_router(memory_state(false).await);
     let response = app
         .oneshot(
@@ -932,10 +1002,9 @@ async fn platform_preflight_is_public_with_safe_defaults() {
         response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
         "http://localhost:3000"
     );
-    assert!(
-        !response
-            .headers()
-            .contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+    assert_eq!(
+        response.headers()[header::ACCESS_CONTROL_ALLOW_CREDENTIALS],
+        "true"
     );
     assert!(response.headers().contains_key("request_id"));
     assert!(response.headers().contains_key("x-request-id"));
@@ -1400,9 +1469,10 @@ async fn config_reload_routes_preserve_legacy_values_metadata_and_permissions() 
     assert_eq!(keys.status(), StatusCode::OK);
     let keys: Value =
         serde_json::from_slice(&to_bytes(keys.into_body(), 64 * 1024).await.unwrap()).unwrap();
-    assert_eq!(keys["total"], 22);
-    assert_eq!(keys["reloadable_keys"][0]["key"], "LOG_LEVEL");
-    assert_eq!(keys["notes"].as_array().unwrap().len(), 4);
+    assert_eq!(keys["total"], 3);
+    assert_eq!(keys["reloadable_keys"][0]["key"], "GATEWAY_TIMEOUT");
+    assert_eq!(keys["restart_required_keys"][0]["key"], "LOG_LEVEL");
+    assert_eq!(keys["notes"].as_array().unwrap().len(), 3);
 
     for (method, path) in [
         ("GET", "/platform/config/current"),
@@ -1462,8 +1532,16 @@ async fn config_reload_routes_preserve_legacy_values_metadata_and_permissions() 
     assert_eq!(reload.status(), StatusCode::OK);
     let reload: Value =
         serde_json::from_slice(&to_bytes(reload.into_body(), 64 * 1024).await.unwrap()).unwrap();
-    assert_eq!(reload["message"], "Configuration reloaded successfully");
+    assert_eq!(
+        reload["message"],
+        "Configuration reloaded; supported HTTP gateway settings apply to subsequent requests"
+    );
     assert!(reload["config"].is_object());
+    assert_eq!(
+        reload["applied"],
+        json!(["GATEWAY_TIMEOUT", "RETRY_ENABLED", "RETRY_MAX_ATTEMPTS"])
+    );
+    assert_eq!(reload["restart_required"], true);
 }
 
 #[tokio::test]
@@ -2695,6 +2773,13 @@ async fn python_config_permissions_granular_export_and_gateway_import_contracts(
 async fn python_config_import_ignores_malformed_entries() {
     let state = memory_state(false).await;
     let storage = state.storage.as_ref().unwrap().clone();
+    let mut before = std::collections::HashMap::new();
+    for collection in ["apis", "endpoints", "roles", "groups", "routings"] {
+        before.insert(
+            collection,
+            storage.find_many(collection, &json!({})).await.unwrap(),
+        );
+    }
     let app = build_router(state);
     let (cookie, _) = login(&app).await;
     let payload = json!({"apis": [{"api_name": "x-only"}, {"api_version": "v1"}], "endpoints": [{"api_name": "x", "endpoint_method": "GET"}], "roles": [{"bad": "doc"}], "groups": [{"bad": "doc"}], "routings": [{"bad": "doc"}]});
@@ -2709,12 +2794,9 @@ async fn python_config_import_ignores_malformed_entries() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     for collection in ["apis", "endpoints", "roles", "groups", "routings"] {
-        assert!(
-            storage
-                .find_many(collection, &json!({}))
-                .await
-                .unwrap()
-                .is_empty(),
+        assert_eq!(
+            storage.find_many(collection, &json!({})).await.unwrap(),
+            before[collection],
             "{collection}"
         );
     }

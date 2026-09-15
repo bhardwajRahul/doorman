@@ -38,6 +38,12 @@ pub struct HotReloadConfig {
     values: RwLock<BTreeMap<String, Value>>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HttpRuntimeSettings {
+    pub timeout_seconds: Option<u64>,
+    pub retry_count: Option<u32>,
+}
+
 impl HotReloadConfig {
     pub fn from_env() -> Self {
         Self::new(env::var_os("DOORMAN_CONFIG_FILE").map(PathBuf::from))
@@ -48,30 +54,64 @@ impl HotReloadConfig {
             config_file,
             values: RwLock::new(BTreeMap::new()),
         };
-        manager.reload();
+        if let Err(error) = manager.reload() {
+            tracing::warn!(error = %error, "initial hot-reload configuration could not be loaded");
+        }
         manager
     }
 
-    pub fn reload(&self) {
-        let mut loaded = self
-            .values
-            .read()
-            .map(|values| values.clone())
-            .unwrap_or_default();
+    /// Validate and atomically publish the next configuration. HTTP gateway
+    /// timeout and retry settings apply on subsequent requests; other values
+    /// remain inspection-only until restart.
+    pub fn reload(&self) -> Result<(), String> {
+        let mut loaded = BTreeMap::new();
         if let Some(path) = self.config_file.as_deref()
             && path.exists()
-            && let Ok(file_values) = load_file(path)
         {
+            let file_values = load_file(path)?;
             loaded.extend(file_values);
         }
         for key in RELOADABLE_KEYS {
             if let Ok(value) = env::var(key) {
-                loaded.insert(key.to_owned(), parse_env_value(&value));
+                let value = if matches!(key, "GATEWAY_TIMEOUT" | "RETRY_MAX_ATTEMPTS") {
+                    Value::String(value)
+                } else {
+                    parse_env_value(&value)
+                };
+                loaded.insert(key.to_owned(), value);
             }
         }
-        if let Ok(mut values) = self.values.write() {
-            *values = loaded;
+        for key in ["GATEWAY_TIMEOUT", "RETRY_MAX_ATTEMPTS"] {
+            if let Some(value) = loaded.get(key) {
+                let number = value
+                    .as_u64()
+                    .or_else(|| value.as_str()?.trim().parse().ok())
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| format!("{key} must be a positive integer"))?;
+                loaded.insert(key.to_owned(), Value::from(number));
+            }
         }
+        if let Some(value) = loaded.get("RETRY_ENABLED") {
+            let enabled = value
+                .as_bool()
+                .or_else(|| {
+                    value.as_str().and_then(|value| {
+                        match value.trim().to_ascii_lowercase().as_str() {
+                            "1" | "true" | "yes" | "on" => Some(true),
+                            "0" | "false" | "no" | "off" => Some(false),
+                            _ => None,
+                        }
+                    })
+                })
+                .ok_or_else(|| "RETRY_ENABLED must be a boolean".to_owned())?;
+            loaded.insert("RETRY_ENABLED".to_owned(), Value::Bool(enabled));
+        }
+        let mut values = self
+            .values
+            .write()
+            .map_err(|_| "hot-reload configuration lock is poisoned".to_owned())?;
+        *values = loaded;
+        Ok(())
     }
 
     pub fn dump(&self) -> Value {
@@ -81,6 +121,47 @@ impl HotReloadConfig {
             .map(|values| values.clone())
             .unwrap_or_default();
         Value::Object(values.into_iter().collect::<Map<_, _>>())
+    }
+
+    pub fn http_settings(&self) -> HttpRuntimeSettings {
+        let Ok(values) = self.values.read() else {
+            return HttpRuntimeSettings::default();
+        };
+        HttpRuntimeSettings {
+            timeout_seconds: values.get("GATEWAY_TIMEOUT").and_then(Value::as_u64),
+            retry_count: if values.get("RETRY_ENABLED").and_then(Value::as_bool) == Some(false) {
+                Some(0)
+            } else {
+                values
+                    .get("RETRY_MAX_ATTEMPTS")
+                    .and_then(Value::as_u64)
+                    .map(|attempts| attempts.saturating_sub(1).min(u64::from(u32::MAX)) as u32)
+            },
+        }
+    }
+
+    pub fn get_u64(&self, key: &str) -> Option<u64> {
+        self.values
+            .read()
+            .ok()
+            .and_then(|values| values.get(key).cloned())
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+    }
+
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.values.read().ok().and_then(|values| {
+            values.get(key).and_then(|value| {
+                value.as_bool().or_else(|| {
+                    value
+                        .as_str()
+                        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+                            "1" | "true" | "yes" | "on" => Some(true),
+                            "0" | "false" | "no" | "off" => Some(false),
+                            _ => None,
+                        })
+                })
+            })
+        })
     }
 }
 
@@ -136,6 +217,39 @@ fn parse_env_value(value: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_reload_retains_last_valid_runtime_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("doorman-hot-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.json");
+        fs::write(
+            &path,
+            r#"{"gateway":{"timeout":"1"},"retry":{"enabled":true,"max_attempts":"1"}}"#,
+        )
+        .unwrap();
+        let config = HotReloadConfig::new(Some(path.clone()));
+        assert_eq!(config.get_u64("GATEWAY_TIMEOUT"), Some(1));
+        assert_eq!(config.get_u64("RETRY_MAX_ATTEMPTS"), Some(1));
+        let previous = config.dump();
+        for invalid in [
+            r#"{"gateway":{"timeout":0}}"#,
+            r#"{"gateway":{"timeout":-1}}"#,
+            r#"{"retry":{"max_attempts":"bad"}}"#,
+            r#"{"retry":{"enabled":"maybe"}}"#,
+            "invalid json",
+        ] {
+            fs::write(&path, invalid).unwrap();
+            assert!(config.reload().is_err());
+            assert_eq!(config.dump(), previous);
+        }
+        fs::write(&path, r#"{"retry":{"enabled":false}}"#).unwrap();
+        config.reload().unwrap();
+        assert_eq!(config.get_bool("RETRY_ENABLED"), Some(false));
+        assert_eq!(config.get_u64("GATEWAY_TIMEOUT"), None);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn flattens_json_configuration_like_the_python_manager() {

@@ -130,13 +130,13 @@ export default function QuotaDashboardPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                      {data.tier_info.display_name}
+                      {data.tier_info?.display_name || 'Standard Tier'}
                     </h2>
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                       Current Plan
                     </p>
                   </div>
-                  {data.tier_info.price_monthly && (
+                  {data.tier_info?.price_monthly && (
                     <div className="text-right">
                       <p className="text-2xl font-bold text-gray-900 dark:text-white">
                         ${data.tier_info.price_monthly}
@@ -146,7 +146,7 @@ export default function QuotaDashboardPage() {
                   )}
                 </div>
                 
-                {data.tier_info.features.length > 0 && (
+                {data.tier_info?.features && data.tier_info.features.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                     <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                       Plan Features:
@@ -166,7 +166,7 @@ export default function QuotaDashboardPage() {
               </div>
 
               {/* Alert Banner */}
-              {data.usage_summary.has_exhausted && (
+              {data.usage_summary?.has_exhausted && (
                 <div className="rounded-lg bg-error-50 border border-error-200 p-4 dark:bg-error-900/20 dark:border-error-800">
                   <div className="flex">
                     <svg className="h-5 w-5 text-error-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -6,6 +6,28 @@ use serde_json::Value;
 use super::{PolicyFailure, PolicyStage};
 use crate::storage::models::{bool_field, string_list_field};
 
+pub fn enforce_configured_api_ip_policy(
+    api: &Value,
+    settings: Option<&Value>,
+    headers: &HeaderMap,
+    direct_ip: Option<IpAddr>,
+    config: &crate::config::SharedStorageConfig,
+) -> Result<(), PolicyFailure> {
+    let locked_settings = config.local_host_ip_bypass_locked.then(|| {
+        let mut settings = settings.cloned().unwrap_or_else(|| serde_json::json!({}));
+        settings["allow_localhost_bypass"] = Value::Bool(config.local_host_ip_bypass);
+        settings
+    });
+    enforce_api_ip_policy(
+        api,
+        locked_settings.as_ref().or(settings),
+        headers,
+        direct_ip,
+        config.trust_x_forwarded_for,
+        config.local_host_ip_bypass,
+    )
+}
+
 pub fn enforce_api_ip_policy(
     api: &Value,
     settings: Option<&Value>,

@@ -72,6 +72,19 @@ LOCAL_HOST_IP_BYPASS=false         # Disable localhost bypass
 | `MAX_BODY_SIZE_BYTES` | `1048576` | Reject requests above 1MB |
 | `STRICT_RESPONSE_ENVELOPE` | `true` | Consistent platform API responses |
 
+For memory-mode recovery rehearsal, set `MEM_DUMP_PATH` to a path inside the
+mounted persistent data volume (for example, `/app/data/memory_dump.bin`).
+Snapshots use timestamped filenames in that directory. Startup first selects
+the newest matching stem by file modification time, then falls back to the
+default stem and finally any `.bin` file in the default directory, matching
+Python's startup search. It fails closed if the selected snapshot is corrupt.
+Use a filename stem such as `/app/data/memory_dump.bin` with timestamped files
+beneath the volume to resume the latest state. In contrast, an HTTP restore
+request reads the exact supplied filename (or `MEM_DUMP_PATH` if omitted) and
+returns 404 if it does not exist; it never substitutes a different backup.
+A dump path outside the mounted volume cannot serve as container-replacement
+restore evidence.
+
 ### JWT and Token Configuration
 
 ```bash
@@ -379,9 +392,13 @@ GET /platform/monitor/readiness
 Readiness returns HTTP 200 only when the gateway is ready. A missing dependency
 or active gRPC API without a usable descriptor returns HTTP 503 with
 `"status": "degraded"`, so load balancers and Kubernetes stop sending traffic
-to the instance. Privileged readiness also exposes the current memory-snapshot
-and metrics-persistence task health; a failed background persistence task
-returns HTTP 503 until its next successful run.
+to the instance. Privileged readiness also exposes the current memory-snapshot,
+metrics-persistence, revocation-purge, gateway-activity-log, and security-audit-log
+health; a failed background task or configured log sink returns HTTP 503 until
+its next successful write. Expired per-token revocations are purged at startup
+and every five minutes by default; set
+`REVOCATION_PURGE_INTERVAL_SECONDS` only when a different cleanup interval is
+required.
 
 **Gateway Status** (public):
 ```bash
@@ -541,20 +558,23 @@ THREADS=1  # REQUIRED - only 1 worker in memory mode
 
 **Memory dumps:**
 - Written on graceful shutdown
-- Can be triggered manually via `/platform/security/settings`
+- Can be triggered manually with `POST /platform/memory/dump` or `SIGUSR1`
 - Encrypted with `MEM_ENCRYPTION_KEY`
 - Restored automatically on startup
 - A corrupt, unauthenticated, or unsupported snapshot stops startup rather than
   silently starting with empty state; a missing snapshot is treated as first boot
 
-**Manual dump trigger:**
+**Autosave runtime configuration:**
 ```bash
 PUT /platform/security/settings
 {
-  "auto_save_memory_enabled": true,
-  "auto_save_memory_interval_minutes": 30
+  "enable_auto_save": true
 }
 ```
+
+This persists the preference and immediately reconfigures the in-process
+autosave worker. `auto_save_frequency_seconds` must be at least 60; an enabled
+worker without `MEM_ENCRYPTION_KEY` is marked unhealthy until corrected.
 
 ### Redis Mode
 
@@ -904,15 +924,17 @@ save 60 10000   # After 60 sec if 10000 keys changed
 
 ### Memory Dumps
 
-**Manual trigger:**
+**Autosave runtime configuration:**
 ```bash
-# Via API
 PUT /platform/security/settings
 {
-  "auto_save_memory_enabled": true,
-  "auto_save_memory_interval_minutes": 30
+  "enable_auto_save": true
 }
 ```
+
+Use `POST /platform/memory/dump` for an authenticated on-demand dump. A
+security-settings update immediately enables/disables or retimes autosave; the
+environment variables establish its startup defaults.
 
 **Automatic on shutdown:**
 - Graceful stop writes encrypted dump

@@ -35,10 +35,21 @@ else
   )
 fi
 
-DOORMAN_EXTERNAL_STORAGE_TEST=1 \
-DOORMAN_TEST_MONGO_PORT="${DOORMAN_TEST_MONGO_PORT:-27018}" \
-DOORMAN_TEST_REDIS_PORT="${DOORMAN_TEST_REDIS_PORT:-16379}" \
-"${cargo_runner[@]}" test \
-  --manifest-path gateway-rs/Cargo.toml \
-  --locked \
+external_test=(
+  env
+  DOORMAN_EXTERNAL_STORAGE_TEST=1
+  "DOORMAN_TEST_MONGO_PORT=${DOORMAN_TEST_MONGO_PORT:-27018}"
+  "DOORMAN_TEST_REDIS_PORT=${DOORMAN_TEST_REDIS_PORT:-16379}"
+  "${cargo_runner[@]}"
+  test
+  --manifest-path gateway-rs/Cargo.toml
+  --locked
   --test external_storage
+)
+
+if [[ -n "${EXTERNAL_STORAGE_LOG:-}" ]]; then
+  mkdir -p "$(dirname "$EXTERNAL_STORAGE_LOG")"
+  "${external_test[@]}" 2>&1 | tee "$EXTERNAL_STORAGE_LOG"
+else
+  "${external_test[@]}"
+fi

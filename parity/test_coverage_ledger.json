@@ -4221,98 +4221,114 @@
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_restore_permissions.py::test_memory_dump_restore_permissions",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Creates limited and manage_security users through HTTP; asserts limited dump/restore are 403 and a security manager can dump to a custom path and restore the resulting file.",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
       "source": {
         "line": 22,
         "path": "backend-services/tests/test_memory_dump_restore_permissions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_dump_file_naming_and_dir_creation",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Creates an encrypted dump in a previously absent nested directory, checks the timestamped filename, and resolves that same latest dump.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::dump_file_naming_and_directory_creation_match_python"
+      ],
       "source": {
         "line": 9,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_dump_with_directory_hint_uses_default_stem",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Writes an actual dump using an existing directory hint and asserts the memory_dump filename stem and latest-file lookup.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::dump_directory_hint_uses_python_default_stem"
+      ],
       "source": {
         "line": 26,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_find_latest_prefers_newest_by_stem",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Selects the newest matching dump by file modification time, ignoring unrelated stems and misleading timestamp names.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::find_latest_prefers_newest_matching_stem_by_modification_time"
+      ],
       "source": {
         "line": 39,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_find_latest_ignores_other_stems_when_dir_hint",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Directory hints select memory_dump files even when another stem has a newer modification time; tests with and without trailing slash.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::find_latest_directory_hint_ignores_other_stems_with_or_without_slash"
+      ],
       "source": {
         "line": 57,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_find_latest_uses_default_when_no_hint",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The production lookup helper, given the configured default path and no hint, returns the newest matching dump.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::find_latest_uses_default_when_no_hint"
+      ],
       "source": {
         "line": 74,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_encrypt_decrypt_roundtrip",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The production DMP1 encrypt/decrypt functions round-trip the pinned hello-world plaintext and assert the DMP1 magic.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::encrypt_decrypt_roundtrip_matches_python"
+      ],
       "source": {
         "line": 93,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_encrypt_requires_sufficient_key",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rejects missing or short key material and verifies the Python character-count rule for Unicode keys.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::encryption_requires_eight_characters_like_python"
+      ],
       "source": {
         "line": 104,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
@@ -4329,62 +4345,72 @@
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_restore_nonexistent_file_raises",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Exact-file restore raises NotFound despite a same-stem backup and preserves current data.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::restore_nonexistent_file_does_not_fall_back_or_mutate_data"
+      ],
       "source": {
         "line": 137,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_dump_fails_with_short_key",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Production dump path rejects a short key and creates neither a file nor the nested destination directory.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::dump_rejects_short_key_without_creating_a_file"
+      ],
       "source": {
         "line": 145,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_memory_dump_requires_key_then_succeeds",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Separate environment-isolated processes prove missing-key dump is 400/MEM002 and configured-key dump is 200 with an existing .bin path.",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_memory_restore_404_missing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Authenticated exact-file restore of a missing path returns 404/MEM003 even with another same-stem snapshot present.",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
       "source": {
         "line": 26,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_memory_dump_then_restore_flow",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Creates e2euser through HTTP, dumps, deletes and verifies absence, restores the dump, and retrieves and logs in as the recovered user.",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
       "source": {
         "line": 39,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
@@ -6847,14 +6873,16 @@
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_memory_dump_and_restore",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Inserts a user, writes an encrypted dump, finds it from a directory hint, clears users, and restores the exact saved collection; additionally verifies wrong-key and tamper failures preserve current state.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::failed_restore_is_atomic_and_exact_file_restore_succeeds"
+      ],
       "source": {
         "line": 104,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
@@ -7715,7 +7743,8 @@
         "missing": 11
       },
       "unit/platform/memory": {
-        "missing": 24
+        "covered": 13,
+        "missing": 11
       },
       "unit/platform/rate-limits": {
         "covered": 5,
@@ -7729,8 +7758,8 @@
         "missing": 2
       },
       "unit/platform/security": {
-        "covered": 2,
-        "missing": 20
+        "covered": 3,
+        "missing": 19
       },
       "unit/platform/subscription": {
         "missing": 7
@@ -7748,8 +7777,8 @@
     "status_counts": {
       "approved_changed": 1,
       "approved_obsolete": 4,
-      "covered": 170,
-      "missing": 425
+      "covered": 184,
+      "missing": 411
     },
     "total_test_cases": 600
   }

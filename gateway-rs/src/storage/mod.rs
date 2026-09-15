@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod configuration;
 pub mod memory;
 pub mod models;
 pub mod mongo;

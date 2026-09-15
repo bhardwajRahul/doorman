@@ -38,6 +38,9 @@ class ReleaseCheckTests(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "failures": [],
+                    "trials": 1,
+                    "requests_per_trial": 1,
+                    "concurrency": 1,
                     "profiles": {
                         profile: {
                             "summary": {
@@ -61,7 +64,7 @@ class ReleaseCheckTests(unittest.TestCase):
             )
         )
         external_log = evidence / "external.log"
-        external_log.write_text("external storage suite passed\n")
+        external_log.write_text("test result: ok. 7 passed; 0 failed; 0 ignored\n")
         operations = evidence / "operations.json"
         operations.write_text(
             json.dumps(
@@ -69,7 +72,7 @@ class ReleaseCheckTests(unittest.TestCase):
                     "schema_version": 1,
                     "image_smoke": {"passed": True},
                     "restore_rehearsal": {"passed": True},
-                    "canary": {"passed": True},
+                    "cutover": {"passed": True},
                     "rollback": {"passed": True},
                 }
             )
@@ -116,7 +119,6 @@ class ReleaseCheckTests(unittest.TestCase):
 
             environment.pop("JWT_SECRET_KEY")
             self.assertNotEqual(self.run_check(environment).returncode, 0)
-
             environment = self.base_environment(Path(directory))
             Path(environment["PARITY_REPORT"]).write_text(
                 json.dumps(
@@ -153,6 +155,22 @@ class ReleaseCheckTests(unittest.TestCase):
             differential["scenario_manifest_sha256"] = "0" * 64
             Path(environment["PARITY_REPORT"]).write_text(json.dumps(differential))
             self.assertNotEqual(self.run_check(environment).returncode, 0)
+
+
+    def test_rejects_nonfinite_metrics_and_evidence_age(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for invalid in [float("nan"), float("inf"), -float("inf")]:
+                with self.subTest(metric=invalid):
+                    environment = self.base_environment(Path(directory))
+                    path = Path(environment["PARITY_PERF_REPORT"])
+                    performance = json.loads(path.read_text())
+                    performance["profiles"]["rest"]["summary"]["rust"]["p95_latency_ms"] = invalid
+                    path.write_text(json.dumps(performance))
+                    self.assertNotEqual(self.run_check(environment).returncode, 0)
+                with self.subTest(age=invalid):
+                    environment = self.base_environment(Path(directory))
+                    environment["DOORMAN_RELEASE_EVIDENCE_MAX_AGE_HOURS"] = str(invalid)
+                    self.assertNotEqual(self.run_check(environment).returncode, 0)
 
 
 if __name__ == "__main__":

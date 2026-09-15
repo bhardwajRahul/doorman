@@ -1,7 +1,6 @@
 pub mod activity;
 pub mod body_limit;
 pub mod chaos;
-pub mod client_ip;
 pub mod cors;
 pub mod logging;
 pub mod metrics;

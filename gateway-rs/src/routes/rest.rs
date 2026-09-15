@@ -229,9 +229,21 @@ fn apply_tier_headers(
 async fn execute_rest(
     state: &AppState,
     request: Request,
-    decision: crate::policy::PolicyDecision,
+    mut decision: crate::policy::PolicyDecision,
     protocol: DataPlaneProtocol,
 ) -> Result<Response, GatewayError> {
+    if matches!(
+        protocol,
+        DataPlaneProtocol::Rest | DataPlaneProtocol::Graphql | DataPlaneProtocol::Soap
+    ) {
+        let settings = state.hot_reload.http_settings();
+        if let Some(timeout_seconds) = settings.timeout_seconds {
+            decision.request_timeout_ms = timeout_seconds.saturating_mul(1_000);
+        }
+        if let Some(retry_count) = settings.retry_count {
+            decision.retry_count = retry_count;
+        }
+    }
     if let Some(delay_ms) = decision.throttle_delay_ms.filter(|delay| *delay > 0) {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }

@@ -11,6 +11,34 @@ pub struct AuditEvent {
 
 const REDACTED: &str = "[REDACTED]";
 
+/// Apply the same secret-name policy to nested structured log exports.
+pub fn redact_record(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                if is_sensitive_name(name) {
+                    *value = serde_json::Value::String(REDACTED.to_owned());
+                } else {
+                    redact_record(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(redact_record),
+        _ => {}
+    }
+}
+
+pub fn redacted_upstream(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return REDACTED.to_owned();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
 /// Return a structured header view that is safe to attach to an audit record.
 /// Audit callers must use this instead of logging a `HeaderMap` directly.
 pub fn redacted_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
@@ -63,7 +91,7 @@ pub fn config_export(actor: &str, section: Option<&str>) {
 }
 
 fn is_sensitive_name(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase();
+    let normalized = name.to_ascii_lowercase().replace('_', "-");
     matches!(
         normalized.as_str(),
         "authorization" | "proxy-authorization" | "cookie" | "set-cookie"

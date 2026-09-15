@@ -9,7 +9,7 @@ use super::{
     bandwidth::enforce_pre_request_limit,
     credits::evaluate_credits,
     groups::enforce_group_access,
-    ip::enforce_api_ip_policy,
+    ip::enforce_configured_api_ip_policy,
     rate_limit::enforce_rate_limit,
     roles::enforce_allowed_roles,
     subscription::enforce_subscription,
@@ -70,13 +70,12 @@ pub fn evaluate_rest_policy(
         ));
     }
     let settings = documents.settings.first();
-    enforce_api_ip_policy(
+    enforce_configured_api_ip_policy(
         &api,
         settings,
         &request.headers,
         request.direct_ip,
-        storage_config.trust_x_forwarded_for,
-        storage_config.local_host_ip_bypass,
+        storage_config,
     )?;
 
     if request

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -75,9 +76,11 @@ def report_path(name: str) -> Path:
     if not path.is_file() or path.stat().st_size == 0:
         fail(f"{name} must point to a non-empty report file: {path}")
     max_age = float(os.environ.get("DOORMAN_RELEASE_EVIDENCE_MAX_AGE_HOURS", "24"))
-    if max_age <= 0:
+    if not math.isfinite(max_age) or max_age <= 0:
         fail("DOORMAN_RELEASE_EVIDENCE_MAX_AGE_HOURS must be greater than zero")
     age_seconds = time.time() - path.stat().st_mtime
+    if age_seconds < -300:
+        fail(f"{name} is dated more than five minutes in the future: {path}")
     if age_seconds > max_age * 3600:
         fail(f"{name} is older than the allowed evidence age ({max_age:g} hours): {path}")
     return path
@@ -115,6 +118,10 @@ def validate_reports() -> None:
     profiles = performance.get("profiles")
     if performance.get("failures") != [] or not isinstance(profiles, dict):
         fail("PARITY_PERF_REPORT must contain an empty failures list and profiles")
+    for field in ("trials", "requests_per_trial", "concurrency"):
+        value = performance.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            fail(f"PARITY_PERF_REPORT must contain a positive integer {field}")
     missing_profiles = [name for name in REQUIRED_PERFORMANCE_PROFILES if name not in profiles]
     if missing_profiles:
         fail(
@@ -128,20 +135,48 @@ def validate_reports() -> None:
             fail(f"PARITY_PERF_REPORT profile {profile_name} must contain a summary")
         for implementation in ("python", "rust"):
             metrics = summary.get(implementation)
-            if not isinstance(metrics, dict) or any(
-                not isinstance(metrics.get(metric), (int, float))
-                or metrics[metric] < 0
-                for metric in PERFORMANCE_METRICS
-            ):
+            if not isinstance(metrics, dict):
                 fail(
                     "PARITY_PERF_REPORT profile "
-                    f"{profile_name} must contain non-negative {implementation} metrics"
+                    f"{profile_name} must contain {implementation} metrics"
+                )
+            for metric in PERFORMANCE_METRICS:
+                value = metrics.get(metric)
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    or value < 0
+                ):
+                    fail(
+                        "PARITY_PERF_REPORT profile "
+                        f"{profile_name} must contain non-negative {implementation} metrics"
+                    )
+            if metrics["throughput_rps"] <= 0 or metrics["peak_rss_bytes"] <= 0:
+                fail(
+                    "PARITY_PERF_REPORT profile "
+                    f"{profile_name} must contain nonzero {implementation} throughput and RSS"
+                )
+            if metrics["error_rate"] > 1:
+                fail(
+                    "PARITY_PERF_REPORT profile "
+                    f"{profile_name} must contain an {implementation} error rate from zero to one"
                 )
 
-    report_path("EXTERNAL_STORAGE_LOG")
+    external_log = report_path("EXTERNAL_STORAGE_LOG")
+    try:
+        external_output = external_log.read_text(errors="replace")
+    except OSError as error:
+        fail(f"EXTERNAL_STORAGE_LOG cannot be read: {error}")
+    if "test result: ok." not in external_output or "test result: FAILED" in external_output:
+        fail(
+            "EXTERNAL_STORAGE_LOG must contain a successful Cargo test summary; "
+            "generate it with EXTERNAL_STORAGE_LOG=<path> "
+            "bash scripts/run_external_storage_tests.sh"
+        )
 
     operations = load_report("RELEASE_OPERATIONS_REPORT")
-    required_operations = ("image_smoke", "restore_rehearsal", "canary", "rollback")
+    required_operations = ("image_smoke", "restore_rehearsal", "cutover", "rollback")
     for operation in required_operations:
         evidence = operations.get(operation)
         if not isinstance(evidence, dict) or evidence.get("passed") is not True:

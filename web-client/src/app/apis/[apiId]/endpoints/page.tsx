@@ -179,21 +179,20 @@ export default function ApiEndpointsPage() {
   }
 
   useEffect(() => {
-    try {
-      const apiData = sessionStorage.getItem('selectedApi')
-      if (apiData) {
-        const parsed = JSON.parse(apiData)
-        setApiName(parsed.api_name || '')
-        setApiVersion(parsed.api_version || '')
-      }
-    } catch { }
-  }, [])
+    const initApi = async () => {
+      try {
+        const apiData = sessionStorage.getItem('selectedApi')
+        if (apiData) {
+          const parsed = JSON.parse(apiData)
+          if (parsed.api_name && parsed.api_version) {
+            setApiName(parsed.api_name)
+            setApiVersion(parsed.api_version)
+            return
+          }
+        }
+      } catch { }
 
-  const loadEndpoints = async () => {
-    setLoading(true)
-    setError(null)
-    const attempt = async () => {
-      if (!apiName || !apiVersion) {
+      try {
         const data = await getJson<any>(`${SERVER_URL}/platform/api/all`)
         const list = Array.isArray(data) ? data : (data.apis || data.response?.apis || [])
         const found = (list || []).find((a: any) => String(a.api_id) === String(apiId))
@@ -201,12 +200,23 @@ export default function ApiEndpointsPage() {
           setApiName(found.api_name || '')
           setApiVersion(found.api_version || '')
         }
+      } catch (err) {
+        console.error('Failed to load api details:', err)
       }
+    }
+    initApi()
+  }, [apiId])
+
+  const loadEndpoints = async () => {
+    setLoading(true)
+    setError(null)
+    const attempt = async () => {
+      if (!apiName || !apiVersion) return
       const { fetchJson } = await import('@/utils/http')
       const data = await fetchJson(`${SERVER_URL}/platform/endpoint/${encodeURIComponent(apiName)}/${encodeURIComponent(apiVersion)}`)
       let list: any[] = []
       if (data) {
-        list = data.endpoints || data.response?.endpoints || []
+        list = Array.isArray(data) ? data : (data.endpoints || data.response?.endpoints || [])
       }
       setEndpoints(list)
       setAllEndpoints(list)
@@ -229,7 +239,7 @@ export default function ApiEndpointsPage() {
     if (apiName && apiVersion) {
       loadEndpoints()
     } else {
-      setLoading(false)
+      // Don't set loading false immediately, wait for API lookup
     }
   }, [apiName, apiVersion])
 
