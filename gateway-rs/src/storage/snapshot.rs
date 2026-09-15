@@ -16,7 +16,10 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
-use crate::storage::runtime::{SharedStorage, StorageError};
+use crate::{
+    state::GatewayRuntime,
+    storage::runtime::{SharedStorage, StorageError},
+};
 
 const MAGIC: &[u8; 4] = b"DMP1";
 const INFO: &[u8] = b"doorman-mem-dump-v1";
@@ -46,6 +49,44 @@ struct Snapshot {
     sanitized: bool,
     note: String,
     data: HashMap<String, Vec<Value>>,
+}
+
+/// An enabled worker dumps immediately at startup and after a settings update,
+/// then waits for the configured cadence. Disabled autosave remains opt-in.
+pub fn spawn_autosave(
+    storage: std::sync::Arc<SharedStorage>,
+    runtime: std::sync::Arc<GatewayRuntime>,
+) -> tokio::task::JoinHandle<()> {
+    let mut updates = runtime.memory_autosave_config();
+    tokio::spawn(async move {
+        loop {
+            let config = updates.borrow_and_update().clone();
+            if !config.enabled {
+                if updates.changed().await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            match dump(&storage, config.dump_path.as_deref()).await {
+                Ok(path) => {
+                    runtime
+                        .memory_snapshot_healthy
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!(path = %path.display(), "memory autosave completed");
+                }
+                Err(error) => {
+                    runtime
+                        .memory_snapshot_healthy
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    tracing::error!(%error, "memory autosave failed");
+                }
+            }
+            tokio::select! {
+                changed = updates.changed() => { if changed.is_err() { break; } }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(config.frequency_seconds.max(60))) => {}
+            }
+        }
+    })
 }
 
 pub async fn dump(
@@ -599,10 +640,12 @@ mod tests {
             data: HashMap::new(),
         };
         let plaintext = serde_json::to_vec(&payload).unwrap();
-        let salt = [7_u8; 16];
+        let salt = Uuid::new_v4().into_bytes();
         let key = derive_key("fixture-key", &salt).unwrap();
         let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
-        let nonce = Nonce::from([9_u8; 12]);
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes.copy_from_slice(&Uuid::new_v4().into_bytes()[..12]);
+        let nonce = Nonce::from(nonce_bytes);
         let ciphertext = cipher.encrypt(&nonce, plaintext.as_ref()).unwrap();
         let mut blob = Vec::new();
         blob.extend_from_slice(MAGIC);
