@@ -7,9 +7,12 @@ Overview
 What’s implemented
 
 - Auto-dump on graceful shutdown, plus signal handlers for SIGTERM/SIGINT/SIGUSR1.
-- Encrypted dumps written to `MEM_DUMP_PATH` (default: `data/memory_dump.bin`).
-- Optional autosave with `MEM_AUTO_SAVE_ENABLED` and `MEM_AUTO_SAVE_FREQ` (seconds).
-- Startup auto-restore from the latest dump in the target directory.
+- Encrypted dumps written to `MEM_DUMP_PATH` (native default: `generated/memory_dump.bin`).
+- Optional autosave with `MEM_AUTO_SAVE_ENABLED` and `MEM_AUTO_SAVE_FREQ` (seconds). When enabled, it dumps immediately, then waits for the configured interval, with a minimum wait of 60 seconds. Positive environment intervals below 60 are preserved in settings; nonpositive or invalid values use the 900-second default. The settings API requires intervals of at least 60 seconds.
+- Frequency strings accept Unicode decimal digits, surrounding whitespace, and underscores between digits, such as `1_200`.
+- Settings API interval strings are limited to 4,300 characters, including signs, whitespace, and separators. `PYTHONINTMAXSTRDIGITS` separately limits decimal digits in API interval strings and autosave environment values (default 4,300; `0` disables the digit limit). This setting is read once at startup; disabling it leaves the API character limit in place.
+- Security settings are mirrored to `SECURITY_SETTINGS_FILE` (native default: `generated/security_settings.json`). On startup, settings restored from a dump take precedence; the JSON file is a fallback when no settings document exists. The file alone does not restore users or other gateway data.
+- Startup selects the dump directory from the saved settings file, falling back to `MEM_DUMP_PATH`, and restores before starting autosave. Settings inside the restored dump then take precedence over the file. A corrupt or wrong-key selected snapshot prevents startup.
 
 Requirements
 
@@ -19,7 +22,7 @@ Requirements
 
 Localhost (docker compose)
 
-- docker-compose.yml already mounts `./generated:/app/data` so dumps persist to your working tree.
+- `docker-compose.yml` mounts the named volume `doorman-generated` at `/app/data` and defaults both persistence paths there. Set `MEM_DUMP_PATH=/app/data/memory_dump.bin` when using a `.env` copied from the native example; its relative path otherwise overrides the Compose default. Any `SECURITY_SETTINGS_FILE` override must also point to a writable, persisted directory.
 - Configure environment in `.env` (recommended):
 
   - `MEM_ENCRYPTION_KEY=some-strong-secret`
@@ -38,6 +41,7 @@ AWS ECS (task definition outline)
     - `THREADS=1`
     - `MEM_ENCRYPTION_KEY=your-strong-key`
     - `MEM_DUMP_PATH=/app/data/memory_dump.bin`
+    - `SECURITY_SETTINGS_FILE=/app/data/security_settings.json`
     - `MEM_AUTO_SAVE_ENABLED=true`
     - `MEM_AUTO_SAVE_FREQ=900`
 
@@ -45,8 +49,8 @@ AWS ECS (task definition outline)
 
 Signals / Manual dump
 
-- SIGTERM / SIGINT: triggers a dump and then shutdown.
-- SIGUSR1: triggers an on-demand dump without terminating.
+- SIGTERM / SIGINT: stops accepting requests, waits for active requests to finish, stops snapshot workers, and writes a final dump using the current security setting's `dump_path`.
+- SIGUSR1: writes an on-demand dump using the current security setting's `dump_path` without terminating, even when autosave is disabled.
 - HTTP route (requires auth): `POST /platform/memory/dump` accepts optional `{ "path": "<dir or file>" }`.
 - HTTP restore requires `manage_security`: `POST /platform/memory/restore`
   accepts `{ "path": "<exact filename returned by dump>" }`. Unlike startup,

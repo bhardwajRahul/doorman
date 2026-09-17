@@ -23,7 +23,9 @@ services:
       MEM_ENCRYPTION_KEY: demo-memory-key-change-me
       MEM_OR_EXTERNAL: MEM
       MEM_AUTO_SAVE_ENABLED: "false"
+      PYTHONINTMAXSTRDIGITS: ${PYTHONINTMAXSTRDIGITS:-4300}
       MEM_DUMP_PATH: /tmp/demo_memory_dump.bin
+      SECURITY_SETTINGS_FILE: /tmp/demo_security_settings.json
       HTTPS_ONLY: "false"
       COOKIE_SAMESITE: Lax
       DEMO_MODE: "true"

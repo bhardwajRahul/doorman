@@ -98,19 +98,11 @@ fn apply(
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(method.trim()))
     });
-    let headers_allowed = requested_headers.is_none_or(|headers| {
-        allow_headers.iter().any(|header| header == "*")
-            || headers
-                .split(',')
-                .map(str::trim)
-                .filter(|header| !header.is_empty())
-                .all(|requested| {
-                    allow_headers
-                        .iter()
-                        .any(|allowed| allowed.eq_ignore_ascii_case(requested))
-                })
-    });
-    if origin_allowed && method_allowed && headers_allowed && !origin.is_empty() {
+    // Python echoes an allowed origin when the requested header list is rejected.
+    // The browser still rejects the preflight because that header is absent from
+    // Access-Control-Allow-Headers; suppressing ACAO changes the observable
+    // response contract.
+    if origin_allowed && method_allowed && !origin.is_empty() {
         insert(target, header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
         append_vary_origin(target);
     }

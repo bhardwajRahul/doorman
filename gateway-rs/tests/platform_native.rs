@@ -1,6 +1,7 @@
 use std::{
     io::{self, Write},
     net::SocketAddr,
+    process::Command,
     sync::{Arc, Mutex, OnceLock, atomic::Ordering},
 };
 
@@ -16,6 +17,8 @@ use tracing::instrument::WithSubscriber;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 mod common;
+
+static VAULT_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[tokio::test]
 async fn restored_python_and_mongo_password_bytes_support_login() {
@@ -219,8 +222,24 @@ async fn config_permission_app(permission: Option<&str>, username: &str) -> (axu
     (app, cookie)
 }
 
-async fn state_with_security_settings(settings: Value) -> AppState {
+async fn state_with_security_settings(mut settings: Value) -> AppState {
     let state = memory_state(false).await;
+    // Match the Python collection schema, with an unrelated record first to
+    // ensure allow/deny behavior does not depend on collection ordering.
+    settings["type"] = json!("security_settings");
+    state
+        .storage
+        .as_ref()
+        .unwrap()
+        .insert_one(
+            "settings",
+            json!({
+                "type":"other", "allow_localhost_bypass":true,
+                "trust_x_forwarded_for":false, "ip_whitelist":[], "ip_blacklist":[]
+            }),
+        )
+        .await
+        .unwrap();
     state
         .storage
         .as_ref()
@@ -333,6 +352,88 @@ async fn authorization_login_status_invalid_and_guards_match_python() {
     .await;
     assert_eq!(status.status(), StatusCode::OK);
     assert_eq!(response_json(status).await["message"], "Token is valid");
+}
+
+#[tokio::test]
+async fn malformed_core_entity_json_uses_python_validation_envelope_before_auth() {
+    let app = build_router(memory_state(false).await);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/platform/group")
+                .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+                .body(Body::from(r#"{"group_name":"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await;
+    assert_eq!(body["error_code"], "VAL001");
+    assert_eq!(body["error_message"], "Validation Error");
+}
+
+#[tokio::test]
+async fn malformed_subscription_json_uses_python_validation_envelope_before_auth() {
+    let app = build_router(memory_state(false).await);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/platform/subscription/subscribe")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"username":"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await;
+    assert_eq!(body["error_code"], "VAL001");
+    assert_eq!(body["error_message"], "Validation Error");
+}
+
+#[tokio::test]
+async fn incomplete_subscription_payload_uses_python_validation_envelope_before_auth() {
+    let app = build_router(memory_state(false).await);
+    let response = platform_request(
+        &app,
+        Method::POST,
+        "/platform/subscription/subscribe",
+        None,
+        None,
+        Some(json!({"username": "admin"})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await;
+    assert_eq!(body["error_code"], "VAL001");
+    assert_eq!(body["error_message"], "Validation Error");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Serializes reads of the process-global VAULT_KEY.
+async fn vault_create_without_extra_permissions_matches_python_negative_contract() {
+    let _guard = VAULT_ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
+    let (app, cookie) = config_permission_app(None, "vault-limited").await;
+    let response = platform_request(
+        &app,
+        Method::POST,
+        "/platform/vault",
+        Some(&cookie),
+        None,
+        Some(json!({"key_name": "k", "value": "v"})),
+    )
+    .await;
+    assert!(
+        !response.status().is_success(),
+        "a user without vault permission created a secret: {}",
+        response.status()
+    );
 }
 
 #[tokio::test]
@@ -1097,7 +1198,6 @@ async fn memory_mode_login_crud_import_and_rollback_are_native() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // Serializes this test's process-global VAULT_KEY mutation.
 async fn vault_lifecycle_encrypts_at_rest_and_never_returns_the_secret() {
-    static VAULT_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _guard = VAULT_ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -1253,6 +1353,129 @@ async fn https_mode_requires_matching_csrf_and_preserves_request_id() {
     assert_eq!(accepted_without_csrf.status(), StatusCode::OK);
 }
 
+// Cookie options are read per request from the environment in both the pinned
+// Python routes and Rust compatibility handler. Run each variant in a child so
+// Rust's parallel test workers never observe another case's cookie policy.
+#[tokio::test]
+async fn cookie_policy_and_host_only_domain_match_python() {
+    if let Ok(case) = std::env::var("DOORMAN_COOKIE_POLICY_CHILD") {
+        let app = build_router(memory_state(false).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/platform/authorization")
+                    .header(header::HOST, "testserver")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"email": "admin@doorman.dev", "password": fixture_password()})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 2);
+        for cookie in &cookies {
+            assert!(cookie.contains("Path=/"));
+            assert!(cookie.contains("Max-Age=1800"));
+            assert!(
+                !cookie.contains("Domain="),
+                "testserver must be host-only: {cookie}"
+            );
+            match case.as_str() {
+                "default" => {
+                    assert!(cookie.contains("SameSite=Strict"));
+                    assert!(!cookie.contains("; Secure"));
+                }
+                "lax" => {
+                    assert!(cookie.contains("SameSite=Lax"));
+                    assert!(!cookie.contains("; Secure"));
+                }
+                "secure" => {
+                    assert!(cookie.contains("SameSite=None"));
+                    assert!(cookie.contains("; Secure"));
+                }
+                _ => unreachable!("unknown child case"),
+            }
+        }
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.starts_with("csrf_token="))
+        );
+        assert!(cookies.iter().any(
+            |cookie| cookie.starts_with("access_token_cookie=") && cookie.contains("HttpOnly")
+        ));
+        return;
+    }
+
+    for (case, same_site, https_only) in [
+        ("default", None, "false"),
+        ("lax", Some("Lax"), "false"),
+        ("secure", Some("None"), "true"),
+    ] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "cookie_policy_and_host_only_domain_match_python",
+                "--nocapture",
+            ])
+            .env("DOORMAN_COOKIE_POLICY_CHILD", case)
+            .env("HTTPS_ONLY", https_only)
+            .env("COOKIE_DOMAIN", "testserver")
+            .env_remove("COOKIE_SECURE")
+            .env_remove("COOKIE_SAMESITE");
+        if let Some(same_site) = same_site {
+            command.env("COOKIE_SAMESITE", same_site);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "cookie case {case} failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn tampered_jwt_is_rejected_with_python_compatible_unauthorized_status() {
+    use jsonwebtoken::{EncodingKey, Header, encode};
+
+    let app = build_router(memory_state(false).await);
+    let token = encode(
+        &Header::default(),
+        &json!({
+            "sub": "admin", "jti": "forged", "exp": usize::MAX,
+            "iss": "doorman-gateway", "aud": "doorman-gateway"
+        }),
+        &EncodingKey::from_secret(b"wrong-secret"),
+    )
+    .unwrap();
+    let response = platform_request(
+        &app,
+        Method::GET,
+        "/platform/user/me",
+        Some(&format!("access_token_cookie={token}")),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await;
+    assert_eq!(body["error_code"], "AUTH003");
+    assert_eq!(body["error_message"], "Unauthorized");
+}
+
 #[tokio::test]
 async fn strict_envelope_preserves_legacy_status_tokens_and_probe_shape() {
     let mut state = memory_state(false).await;
@@ -1341,7 +1564,190 @@ async fn platform_uses_the_configured_default_request_body_limit() {
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
-    assert_eq!(body["error_code"], "GTW013");
+    assert_eq!(body["error_code"], "REQ001");
+}
+
+#[tokio::test]
+async fn configured_platform_body_limit_returns_python_413() {
+    if std::env::var_os("DOORMAN_BODY_LIMIT_CHILD").is_some() {
+        let app = build_router(memory_state(false).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/platform/authorization")
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .body(Body::from("x".repeat(100)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "configured_platform_body_limit_returns_python_413",
+            "--nocapture",
+        ])
+        .env("DOORMAN_BODY_LIMIT_CHILD", "1")
+        .env("MAX_BODY_SIZE_BYTES", "10")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn strict_wildcard_cors_allows_localhost_like_python() {
+    if std::env::var_os("DOORMAN_CORS_CHILD").is_some() {
+        let app = build_router(memory_state(false).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/platform/monitor/liveness")
+                    .header(header::ORIGIN, "http://localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_CREDENTIALS],
+            "true"
+        );
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "strict_wildcard_cors_allows_localhost_like_python",
+            "--nocapture",
+        ])
+        .env("DOORMAN_CORS_CHILD", "1")
+        .env("CORS_STRICT", "true")
+        .env("ALLOWED_ORIGINS", "*")
+        .env("ALLOW_CREDENTIALS", "true")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn proto_upload_rejects_traversal_filename() {
+    let app = build_router(memory_state(false).await);
+    let (cookie, _) = login(&app).await;
+    let boundary = "doorman-proto-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"../svc.proto\"\r\nContent-Type: application/octet-stream\r\n\r\nsyntax = \"proto3\"; package x;\r\n--{boundary}--\r\n"
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/platform/proto/svc/v1")
+                .header(header::COOKIE, cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(response).await["error_code"], "REQ002");
+}
+
+#[tokio::test]
+async fn proto_retrieval_requires_manage_apis_permission() {
+    let (app, cookie) = config_permission_app(None, "proto-viewer").await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/platform/proto/private/v1")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = response_json(response).await;
+    assert_eq!(body["error_code"], "API008");
+    assert_eq!(
+        body["error_message"],
+        "You do not have permission to manage proto files"
+    );
+}
+
+#[tokio::test]
+async fn platform_security_headers_csp_hsts_and_request_ids_match_python() {
+    let app = build_router(memory_state(false).await);
+    let plain = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/platform/monitor/liveness")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), StatusCode::OK);
+    assert_eq!(plain.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(plain.headers()["x-frame-options"], "DENY");
+    assert_eq!(plain.headers()["referrer-policy"], "no-referrer");
+    assert!(
+        plain.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("default-src 'none'")
+    );
+    assert!(!plain.headers().contains_key("strict-transport-security"));
+    assert!(!plain.headers()["x-request-id"].is_empty());
+    assert_eq!(
+        plain.headers()["x-request-id"],
+        plain.headers()["request_id"]
+    );
+
+    let mut state = memory_state(true).await;
+    state.config.content_security_policy = Some("default-src 'self'".to_owned());
+    let secure_app = build_router(state);
+    let secure = secure_app
+        .oneshot(
+            Request::builder()
+                .uri("/platform/monitor/liveness")
+                .header("x-request-id", "python-request-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(secure.status(), StatusCode::OK);
+    assert_eq!(
+        secure.headers()["content-security-policy"],
+        "default-src 'self'"
+    );
+    assert!(secure.headers().contains_key("strict-transport-security"));
+    assert_eq!(secure.headers()["x-request-id"], "python-request-id");
+    assert_eq!(secure.headers()["request_id"], "python-request-id");
 }
 
 #[tokio::test]
@@ -1709,6 +2115,16 @@ async fn management_permissions_readiness_tools_and_restart_preserve_contract() 
     let (admin_cookie, _) = login(&app).await;
     let (limited_cookie, _) = login_as(&app, "limited@doorman.dev", fixture_password()).await;
 
+    for path in [
+        "/platform/logging/logs",
+        "/platform/config/export/all",
+        "/platform/routing/all",
+    ] {
+        let denied =
+            platform_request(&app, Method::GET, path, Some(&limited_cookie), None, None).await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+
     let public_readiness = app
         .clone()
         .oneshot(
@@ -1837,6 +2253,23 @@ async fn management_permissions_readiness_tools_and_restart_preserve_contract() 
         serde_json::from_slice(&to_bytes(chaos_stats.into_body(), 4096).await.unwrap()).unwrap();
     assert_eq!(chaos_stats["redis_outage"], false);
     assert!(chaos_stats["error_budget_burn"].is_number());
+
+    let invalid_chaos_backend = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/platform/tools/chaos/toggle")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &admin_cookie)
+                .body(Body::from(
+                    json!({"backend": "notabackend", "enabled": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_chaos_backend.status(), StatusCode::BAD_REQUEST);
 
     let restart = app
         .oneshot(
@@ -2283,14 +2716,46 @@ async fn api_cors_preflight(
         .await
         .unwrap()
 }
+
+async fn public_api_cors_preflight(
+    app: &axum::Router,
+    path: &str,
+    origin: &str,
+    method: &str,
+    requested_headers: &str,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri(path)
+                .header("x-api-version", "v1")
+                .header(header::ORIGIN, origin)
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, method)
+                .header(header::ACCESS_CONTROL_REQUEST_HEADERS, requested_headers)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
 #[tokio::test]
 async fn python_api_rest_cors_origin_and_header_matrix() {
     let app = build_router(memory_state(false).await);
     let (cookie, _) = login(&app).await;
-    let api = platform_request(&app, Method::POST, "/platform/api", Some(&cookie), None, Some(json!({"api_name": "cors-exact", "api_version": "v1", "api_description": "CORS parity", "api_servers": ["http://127.0.0.1:9"], "api_type": "REST", "api_cors_allow_origins": ["http://ok.example"], "api_cors_allow_methods": ["GET"], "api_cors_allow_headers": ["Content-Type", "Authorization"], "api_cors_allow_credentials": true, "api_cors_expose_headers": ["X-Resp-Id", "X-Trace-Id"]}))).await;
+    let api = platform_request(&app, Method::POST, "/platform/api", Some(&cookie), None, Some(json!({"api_name": "cors-exact", "api_version": "v1", "api_description": "CORS parity", "api_servers": ["http://127.0.0.1:9"], "api_type": "REST", "api_public": true, "api_cors_allow_origins": ["http://ok.example"], "api_cors_allow_methods": ["GET"], "api_cors_allow_headers": ["Content-Type", "Authorization"], "api_cors_allow_credentials": true, "api_cors_expose_headers": ["X-Resp-Id", "X-Trace-Id"]}))).await;
     assert!(api.status().is_success());
     let endpoint = platform_request(&app, Method::POST, "/platform/endpoint", Some(&cookie), None, Some(json!({"api_name": "cors-exact", "api_version": "v1", "endpoint_method": "GET", "endpoint_uri": "/status", "endpoint_description": "status"}))).await;
     assert!(endpoint.status().is_success());
+    let public_preflight = public_api_cors_preflight(
+        &app,
+        "/api/rest/cors-exact/v1/status",
+        "http://ok.example",
+        "GET",
+        "Content-Type",
+    )
+    .await;
+    assert_eq!(public_preflight.status(), StatusCode::NO_CONTENT);
     let allowed = api_cors_preflight(
         &app,
         &cookie,
@@ -2352,10 +2817,9 @@ async fn python_api_rest_cors_origin_and_header_matrix() {
         "X-Other",
     )
     .await;
-    assert!(
-        !disallowed
-            .headers()
-            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+    assert_eq!(
+        disallowed.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://ok.example"
     );
     assert!(
         !disallowed.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
@@ -2396,8 +2860,24 @@ async fn python_api_graphql_and_soap_cors_preflight() {
         ("cors-gql", "GRAPHQL", "/api/graphql/cors-gql", true),
         ("cors-soap", "SOAP", "/api/soap/cors-soap/v1/op", false),
     ] {
-        let api = platform_request(&app, Method::POST, "/platform/api", Some(&cookie), None, Some(json!({"api_name": name, "api_version": "v1", "api_description": "protocol CORS parity", "api_servers": ["http://127.0.0.1:9"], "api_type": api_type, "api_cors_allow_origins": ["http://foo"], "api_cors_allow_methods": ["POST"], "api_cors_allow_headers": ["Content-Type"], "api_cors_allow_credentials": credentials}))).await;
+        let api = platform_request(&app, Method::POST, "/platform/api", Some(&cookie), None, Some(json!({"api_name": name, "api_version": "v1", "api_description": "protocol CORS parity", "api_servers": ["http://127.0.0.1:9"], "api_type": api_type, "api_public": true, "api_cors_allow_origins": ["http://foo"], "api_cors_allow_methods": ["POST"], "api_cors_allow_headers": ["Content-Type"], "api_cors_allow_credentials": credentials}))).await;
         assert!(api.status().is_success(), "{api_type}");
+        let public_preflight =
+            public_api_cors_preflight(&app, path, "http://foo", "POST", "Content-Type").await;
+        assert_eq!(
+            public_preflight.status(),
+            StatusCode::NO_CONTENT,
+            "{api_type}"
+        );
+        let denied_header =
+            public_api_cors_preflight(&app, path, "http://foo", "POST", "X-Not-Allowed").await;
+        assert_eq!(denied_header.status(), StatusCode::NO_CONTENT, "{api_type}");
+        assert!(
+            !denied_header
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            "{api_type}"
+        );
         let response =
             api_cors_preflight(&app, &cookie, path, "http://foo", "POST", "Content-Type").await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT, "{api_type}");

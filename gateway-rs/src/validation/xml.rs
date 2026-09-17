@@ -130,4 +130,19 @@ mod tests {
         assert!(soap_body_object("<!DOCTYPE x><x/>").is_err());
         assert!(soap_body_object("<Envelope/>").is_err());
     }
+
+    #[test]
+    fn validates_structural_soap_fields_without_a_wsdl_like_python() {
+        let xml = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><CreateUser><username>alice</username><email>alice@example.com</email></CreateUser></soap:Body></soap:Envelope>"#;
+        let document = soap_body_object(xml).unwrap();
+        let schema = serde_json::json!({
+            "username": {"required": true, "type": "string", "min": 3, "max": 50},
+            "email": {"required": true, "type": "string", "format": "email"},
+        });
+        assert!(crate::validation::json::validate_json(&document, &schema).is_ok());
+
+        let missing_username = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><CreateUser><email>no-user@example.com</email></CreateUser></soap:Body></soap:Envelope>"#;
+        let document = soap_body_object(missing_username).unwrap();
+        assert!(crate::validation::json::validate_json(&document, &schema).is_err());
+    }
 }

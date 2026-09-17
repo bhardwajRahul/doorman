@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useEffect, useMemo, useState } from 'react'
+import DOMPurify from 'dompurify'
 
 type HttpMethod = 'get' | 'post' | 'put' | 'delete' | 'patch' | 'head' | 'options' | 'trace'
 
@@ -177,7 +178,7 @@ export default function OpenApiViewer({ openapiUrl }: { openapiUrl: string }) {
                     {isOpen && (
                       <div className="px-4 pb-3">
                         {op.description && (
-                          <div className="markdown max-w-none my-2" dangerouslySetInnerHTML={{ __html: op.description }} />
+                          <div className="markdown max-w-none my-2" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(op.description) }} />
                         )}
                         <div className="mt-2">
                           <div className="flex items-center justify-between">

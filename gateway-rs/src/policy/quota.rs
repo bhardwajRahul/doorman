@@ -11,6 +11,41 @@ pub struct QuotaPolicy {
     pub max_bandwidth_bytes: u64,
 }
 
+/// Derived usage state used by the quota API and enforcement callers.
+/// Thresholds deliberately match the Python tracker: warning begins at 80%
+/// and critical at 95%, including the exhausted boundary.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize)]
+pub struct QuotaUsageStatus {
+    pub allowed: bool,
+    pub current_usage: u64,
+    pub limit: u64,
+    pub remaining: u64,
+    pub percentage_used: u64,
+    pub is_warning: bool,
+    pub is_critical: bool,
+    pub is_exhausted: bool,
+}
+
+pub fn quota_usage_status(current_usage: u64, limit: u64) -> QuotaUsageStatus {
+    let remaining = limit.saturating_sub(current_usage);
+    let percentage_used = if limit == 0 {
+        0
+    } else {
+        current_usage.saturating_mul(100) / limit
+    };
+    let is_exhausted = limit == 0 || current_usage >= limit;
+    QuotaUsageStatus {
+        allowed: !is_exhausted,
+        current_usage,
+        limit,
+        remaining,
+        percentage_used,
+        is_warning: percentage_used >= 80,
+        is_critical: percentage_used >= 95,
+        is_exhausted,
+    }
+}
+
 impl Default for QuotaPolicy {
     fn default() -> Self {
         Self {
@@ -62,5 +97,26 @@ mod tests {
         let policy = QuotaPolicy::default();
         assert!(check_quota(99_999, 1, &policy).is_ok());
         assert!(check_quota(100_000, 1, &policy).is_err());
+    }
+
+    #[test]
+    fn quota_usage_thresholds_match_python_tracker() {
+        let within = quota_usage_status(5_000, 10_000);
+        assert!(within.allowed);
+        assert_eq!(within.remaining, 5_000);
+        assert!(!within.is_warning);
+
+        let warning = quota_usage_status(8_500, 10_000);
+        assert!(warning.is_warning);
+        assert!(!warning.is_critical);
+
+        let critical = quota_usage_status(9_600, 10_000);
+        assert!(critical.is_critical);
+        assert!(!critical.is_exhausted);
+
+        let exhausted = quota_usage_status(10_000, 10_000);
+        assert!(exhausted.is_exhausted);
+        assert!(!exhausted.allowed);
+        assert_eq!(exhausted.remaining, 0);
     }
 }

@@ -44,6 +44,7 @@ use crate::{
     platform_contract::{normalize_create_api, normalize_update_api},
     policy::{
         auth::{AuthClaims, verify_request_token},
+        groups::enforce_group_access,
         ip::{effective_client_ip_for_settings, enforce_configured_api_ip_policy},
         rate_limit::duration_to_seconds,
     },
@@ -84,6 +85,7 @@ struct AccessClaims {
 struct EntitySpec {
     collection: &'static str,
     key: &'static str,
+    list_key: Option<&'static str>,
     permission: &'static str,
     permission_code: &'static str,
     id_field: Option<&'static str>,
@@ -148,8 +150,8 @@ pub async fn platform_dispatch(
         Err(_) => {
             return error(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "GTW013",
-                "Request body too large",
+                "REQ001",
+                &format!("Request entity too large (max: {body_limit} bytes)"),
                 &request_id,
             );
         }
@@ -167,7 +169,38 @@ pub async fn platform_dispatch(
             &request_id,
         );
     };
+    // FastAPI validates a typed JSON body before entering the route handler.
+    // The shared entity routes model those typed Python endpoints, so malformed
+    // JSON must produce the global validation envelope before authentication or
+    // permission checks run.  Limit this to JSON mutating requests so raw proto
+    // and WSDL uploads retain their content-specific parsing behavior.
+    if parsed_payload.is_err()
+        && content_type_is_json(&headers)
+        && is_typed_json_mutation(path, &method)
+    {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VAL001",
+            "Validation Error",
+            &request_id,
+        );
+    }
     let payload = parsed_payload.unwrap_or(Value::Null);
+    // SubscribeModel requires all three fields.  Keep this lightweight
+    // compatibility check at dispatch time until the remaining typed model is
+    // ported, so a missing field reaches FastAPI's global validation envelope
+    // instead of becoming a later SUB003/SUB005 lookup error.
+    if content_type_is_json(&headers)
+        && is_subscription_mutation(path, &method)
+        && !subscription_payload_has_required_fields(&payload)
+    {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VAL001",
+            "Validation Error",
+            &request_id,
+        );
+    }
 
     if path == "/authorization" && method == Method::POST {
         if let Some(response) = auth_account_rate_limit(
@@ -838,6 +871,7 @@ async fn dispatch_core_entities(
             let spec = EntitySpec {
                 collection: "tiers",
                 key: "tier_id",
+                list_key: None,
                 permission: "manage_tiers",
                 permission_code: "TIER001",
                 id_field: Some("tier_id"),
@@ -866,6 +900,7 @@ async fn dispatch_core_entities(
             let spec = EntitySpec {
                 collection: "rate_limit_rules",
                 key: "rule_id",
+                list_key: None,
                 permission: "manage_rate_limits",
                 permission_code: "RATE001",
                 id_field: Some("rule_id"),
@@ -902,6 +937,7 @@ async fn dispatch_core_entities(
             EntitySpec {
                 collection: "groups",
                 key: "group_name",
+                list_key: Some("groups"),
                 permission: "manage_groups",
                 permission_code: "GRP008",
                 id_field: None,
@@ -917,6 +953,7 @@ async fn dispatch_core_entities(
             EntitySpec {
                 collection: "roles",
                 key: "role_name",
+                list_key: Some("roles"),
                 permission: "manage_roles",
                 permission_code: "ROLE009",
                 id_field: None,
@@ -932,6 +969,7 @@ async fn dispatch_core_entities(
             EntitySpec {
                 collection: "routings",
                 key: "client_key",
+                list_key: None,
                 permission: "manage_routings",
                 permission_code: "RTG012",
                 id_field: None,
@@ -1450,7 +1488,19 @@ async fn entity_routes(
             Ok(items) => items.into_iter().map(strip_internal).collect::<Vec<_>>(),
             Err(_) => return unexpected(request_id),
         };
-        return success(StatusCode::OK, paginate(items, query), request_id);
+        let items = if spec.collection == "roles" && !is_admin_user(state, username).await {
+            items
+                .into_iter()
+                .filter(|role| role.get("role_name").and_then(Value::as_str) != Some("admin"))
+                .collect()
+        } else {
+            items
+        };
+        let payload = match spec.list_key {
+            Some(list_key) => paginate_named(items, query, list_key),
+            None => paginate(items, query),
+        };
+        return success(StatusCode::OK, payload, request_id);
     }
     if method == Method::POST && suffix.is_empty() {
         if !has_permission(state, username, spec.permission).await {
@@ -1551,6 +1601,14 @@ async fn entity_routes(
                 request_id,
             );
         }
+        if spec.collection == "roles" && key == "admin" && !is_admin_user(state, username).await {
+            return error(
+                StatusCode::NOT_FOUND,
+                spec.not_found_code,
+                "Resource not found",
+                request_id,
+            );
+        }
         return match storage.find_one(spec.collection, &filter).await {
             Ok(Some(item)) => success(StatusCode::OK, strip_internal(item), request_id),
             Ok(None) => error(
@@ -1590,11 +1648,11 @@ async fn entity_routes(
                 updates.len() == 1
                     && updates.get("manage_users").and_then(Value::as_bool) == Some(true)
             });
-        if (key == "admin" && !actor_is_admin)
-            || (!bootstrap_admin_restores_manage_users
-                && (!role_permissions_within_actor(state, username, &existing).await
-                    || !role_permissions_within_actor(state, username, &payload).await))
-        {
+        let actor_can_modify = actor_is_admin
+            || bootstrap_admin_restores_manage_users
+            || (role_permissions_within_actor(state, username, &existing).await
+                && role_permissions_within_actor(state, username, &payload).await);
+        if (key == "admin" && !actor_is_admin) || !actor_can_modify {
             return error(
                 StatusCode::FORBIDDEN,
                 "ROLE009",
@@ -2021,11 +2079,21 @@ async fn user_routes(
             );
         }
         return match storage.find_many("users", &json!({})).await {
-            Ok(items) => success(
-                StatusCode::OK,
-                paginate(items.into_iter().map(public_user).collect(), query),
-                request_id,
-            ),
+            Ok(items) => {
+                let actor_is_admin = is_admin_user(state, active_user).await;
+                let items = items
+                    .into_iter()
+                    .filter(|user| {
+                        actor_is_admin || user.get("role").and_then(Value::as_str) != Some("admin")
+                    })
+                    .map(public_user)
+                    .collect();
+                success(
+                    StatusCode::OK,
+                    paginate_named(items, query, "users"),
+                    request_id,
+                )
+            }
             Err(_) => unexpected(request_id),
         };
     }
@@ -2074,6 +2142,14 @@ async fn user_routes(
         );
     }
     if method == Method::PUT {
+        if target == "admin" && suffix.ends_with("/update-password") {
+            return error(
+                StatusCode::FORBIDDEN,
+                "USR022",
+                "Super admin password cannot be changed via the API",
+                request_id,
+            );
+        }
         if target == "admin" && !bootstrap_admin_update_fields_are_safe(&payload) {
             return error(
                 StatusCode::FORBIDDEN,
@@ -2242,9 +2318,9 @@ async fn user_routes(
         }
         if target == "admin" {
             return error(
-                StatusCode::BAD_REQUEST,
-                "USR009",
-                "Admin user cannot be deleted",
+                StatusCode::FORBIDDEN,
+                "USR021",
+                "Super admin user cannot be deleted",
                 request_id,
             );
         }
@@ -2807,6 +2883,16 @@ async fn user_by(
         }
         Err(_) => return unexpected(request_id),
     };
+    if user.get("role").and_then(Value::as_str) == Some("admin")
+        && !is_admin_user(state, active_user).await
+    {
+        return error(
+            StatusCode::NOT_FOUND,
+            "USR002",
+            "User not found",
+            request_id,
+        );
+    }
     if user.get("username").and_then(Value::as_str) != Some(active_user)
         && !has_permission(state, active_user, "manage_users").await
     {
@@ -2967,7 +3053,10 @@ async fn authorization_routes(
         .collect::<Vec<_>>();
     if parts.len() == 2 && has_permission(state, username, "manage_auth").await {
         let target = parts[1];
-        if matches!(parts[0], "disable" | "enable" | "revoke" | "unrevoke") {
+        if matches!(
+            parts[0],
+            "status" | "disable" | "enable" | "revoke" | "unrevoke"
+        ) {
             let Some(storage) = &state.storage else {
                 return unexpected(request_id);
             };
@@ -3136,7 +3225,10 @@ async fn platform_ip_filter(
     request_id: &str,
 ) -> Option<Response> {
     let storage = state.storage.as_ref()?;
-    let settings = match storage.find_one("settings", &json!({})).await {
+    let settings = match storage
+        .find_one("settings", &json!({"type": "security_settings"}))
+        .await
+    {
         Ok(settings) => settings,
         Err(error_value) => {
             tracing::error!(error = %error_value, "security settings lookup failed; denying request");
@@ -4153,9 +4245,12 @@ async fn get_security_settings(
         return unexpected(request_id);
     };
     let is_memory = state.config.shared_storage.storage_mode.to_uppercase() == "MEM";
-    match storage.find_many("settings", &json!({})).await {
-        Ok(items) => {
-            let mut settings = merge_security_settings(state, items.into_iter().next());
+    match storage
+        .find_one("settings", &json!({"type": "security_settings"}))
+        .await
+    {
+        Ok(current) => {
+            let mut settings = merge_security_settings(state, current);
             let client_ip = direct_addr.map(|addr| addr.ip().to_string());
             let client_ip_xff = headers
                 .get("x-forwarded-for")
@@ -4200,44 +4295,7 @@ async fn get_security_settings(
 }
 
 fn merge_security_settings(state: &AppState, current: Option<Value>) -> Value {
-    let autosave_frequency = env::var("MEM_AUTO_SAVE_FREQ")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value >= 60)
-        .unwrap_or(900);
-    let mut settings = Map::from_iter([
-        ("type".to_owned(), json!("security_settings")),
-        (
-            "enable_auto_save".to_owned(),
-            json!(env_bool("MEM_AUTO_SAVE_ENABLED", false)),
-        ),
-        (
-            "auto_save_frequency_seconds".to_owned(),
-            json!(autosave_frequency),
-        ),
-        (
-            "dump_path".to_owned(),
-            json!(
-                env::var("MEM_DUMP_PATH")
-                    .unwrap_or_else(|_| "generated/memory_dump.bin".to_owned())
-            ),
-        ),
-        ("ip_whitelist".to_owned(), json!([])),
-        ("ip_blacklist".to_owned(), json!([])),
-        (
-            "trust_x_forwarded_for".to_owned(),
-            json!(state.config.shared_storage.trust_x_forwarded_for),
-        ),
-        ("xff_trusted_proxies".to_owned(), json!([])),
-        (
-            "allow_localhost_bypass".to_owned(),
-            json!(state.config.shared_storage.local_host_ip_bypass),
-        ),
-    ]);
-    if let Some(Value::Object(current)) = current {
-        settings.extend(current);
-    }
-    Value::Object(settings)
+    crate::storage::security_settings::merge(&state.config, current.as_ref())
 }
 
 async fn upsert_security_settings(
@@ -4253,34 +4311,30 @@ async fn upsert_security_settings(
     let Some(storage) = &state.storage else {
         return unexpected(request_id);
     };
-    let existing = match storage.find_many("settings", &json!({})).await {
+    let filter = json!({"type": "security_settings"});
+    let existing = match storage.find_one("settings", &filter).await {
         Ok(existing) => existing,
         Err(_) => return unexpected(request_id),
     };
     let is_memory = state.config.shared_storage.storage_mode.to_uppercase() == "MEM";
-    let mut updated_doc = merge_security_settings(state, existing.first().cloned());
+    let mut updated_doc = merge_security_settings(state, existing);
     if let Value::Object(base) = &mut updated_doc {
         base.extend(payload);
     }
-    let result = if let Some(first) = existing.first() {
-        if let Some(id) = first.get("_id") {
-            storage
-                .update_one("settings", &json!({"_id": id}), &updated_doc)
-                .await
-                .map(|_| ())
-        } else {
-            storage
-                .replace_collection("settings", vec![updated_doc.clone()])
-                .await
-        }
-    } else {
-        storage
+    // Python updates by type, not by collection order or the presence of _id.
+    // In particular, imported memory records without _id must not cause the
+    // whole settings collection to be replaced.
+    let result = match storage.update_one("settings", &filter, &updated_doc).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => storage
             .insert_one("settings", updated_doc.clone())
             .await
-            .map(|_| ())
+            .map(|_| ()),
+        Err(error) => Err(error),
     };
     match result {
         Ok(()) => {
+            crate::storage::security_settings::persist(&state.config, &updated_doc);
             state
                 .runtime
                 .update_memory_autosave_config(MemoryAutosaveConfig::from_settings(Some(
@@ -4302,28 +4356,112 @@ async fn upsert_security_settings(
     }
 }
 
-fn is_valid_ip_or_cidr(s: &str) -> bool {
-    if s.contains('/') {
-        let parts: Vec<&str> = s.split('/').collect();
-        if parts.len() != 2 {
-            return false;
-        }
-        if let Ok(ip) = parts[0].parse::<std::net::IpAddr>() {
-            if let Ok(prefix) = parts[1].parse::<u8>() {
-                return match ip {
-                    std::net::IpAddr::V4(_) => prefix <= 32,
-                    std::net::IpAddr::V6(_) => prefix <= 128,
-                };
-            }
-        }
-        false
-    } else {
-        s.parse::<std::net::IpAddr>().is_ok()
+// Pydantic v1 accepts these exact JSON boolean representations, without
+// trimming strings. Keep coercion local to this model, not global policy input.
+fn security_setting_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => match value.as_f64()? {
+            0.0 => Some(false),
+            1.0 => Some(true),
+            _ => None,
+        },
+        Value::String(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+            "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
+// Pydantic v1's str validator uses Python spelling for JSON scalars.
+fn security_setting_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Bool(value) => Some(if *value { "True" } else { "False" }.to_owned()),
+        Value::Number(value) if value.is_i64() || value.is_u64() => Some(value.to_string()),
+        Value::Number(value) => {
+            let value = value.as_f64()?;
+            let mut buffer = ryu::Buffer::new();
+            // Ryū preserves Python's round-to-even choice for shortest
+            // representations; Rust's Debug formatter differs at some ties.
+            let rendered = buffer.format_finite(value);
+            if value.abs() > 0.0 && value.abs() < 0.0001 && !rendered.contains('e') {
+                // Ryū writes 1e-5 in decimal; Python switches at 1e-4.
+                let (sign, unsigned) = rendered
+                    .strip_prefix('-')
+                    .map_or(("", rendered), |unsigned| ("-", unsigned));
+                let digits = unsigned.strip_prefix("0.")?;
+                let leading = digits.chars().take_while(|digit| *digit == '0').count();
+                let digits = &digits[leading..];
+                let mantissa = if digits.len() == 1 {
+                    digits.to_owned()
+                } else {
+                    format!("{}.{}", &digits[..1], &digits[1..])
+                };
+                return Some(format!("{sign}{mantissa}e-{:02}", leading + 1));
+            }
+            // Python uses an explicit exponent sign and at least two digits.
+            if let Some((mantissa, exponent)) = rendered.split_once('e') {
+                let exponent = exponent.parse::<i32>().ok()?;
+                Some(format!("{mantissa}e{exponent:+03}"))
+            } else {
+                Some(rendered.to_owned())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn security_setting_interval(value: &Value) -> Result<u64, Value> {
+    let integer_error = || {
+        json!({
+            "loc": ["body", "auto_save_frequency_seconds"],
+            "msg": "value is not a valid integer", "type": "type_error.integer"
+        })
+    };
+    let minimum_error = || {
+        json!({
+            "loc": ["body", "auto_save_frequency_seconds"],
+            "msg": "ensure this value is greater than or equal to 60",
+            "type": "value_error.number.not_ge", "ctx": {"limit_value": 60}
+        })
+    };
+    let integer = match value {
+        Value::Bool(value) => i128::from(*value),
+        Value::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                i128::from(value)
+            } else if let Some(value) = value.as_i64() {
+                i128::from(value)
+            } else {
+                let value = value.as_f64().ok_or_else(integer_error)?.trunc();
+                if value < 60.0 {
+                    return Err(minimum_error());
+                }
+                // Do not let float-to-int saturation turn an overflow into an
+                // accepted but different interval. Python's unbounded integers
+                // beyond the runtime's u64 range remain a separate parity gap.
+                if !value.is_finite() || value >= 18_446_744_073_709_551_616.0 {
+                    return Err(integer_error());
+                }
+                value as i128
+            }
+        }
+        Value::String(value) => {
+            crate::python_scalar::parse_model_integer(value).ok_or_else(integer_error)?
+        }
+        _ => return Err(integer_error()),
+    };
+    if integer < 60 {
+        return Err(minimum_error());
+    }
+    u64::try_from(integer).map_err(|_| integer_error())
+}
+
 fn normalize_security_settings(payload: Value) -> Result<Map<String, Value>, Vec<Value>> {
-    let values = match payload {
+    let mut values = match payload {
         Value::Null => return Ok(Map::new()),
         Value::Object(values) => values,
         _ => {
@@ -4336,39 +4474,73 @@ fn normalize_security_settings(payload: Value) -> Result<Map<String, Value>, Vec
     };
     let mut normalized = Map::new();
     let mut errors = Vec::new();
-    for (key, value) in values {
+    // Validation errors follow the Python model's declaration order.
+    for key in [
+        "enable_auto_save",
+        "auto_save_frequency_seconds",
+        "dump_path",
+        "ip_whitelist",
+        "ip_blacklist",
+        "trust_x_forwarded_for",
+        "xff_trusted_proxies",
+        "allow_localhost_bypass",
+    ] {
+        let Some(value) = values.remove(key) else {
+            continue;
+        };
         if value.is_null() {
             continue;
         }
-        let valid = match key.as_str() {
+        match key {
             "enable_auto_save" | "trust_x_forwarded_for" | "allow_localhost_bypass" => {
-                value.is_boolean()
+                if let Some(value) = security_setting_bool(&value) {
+                    normalized.insert(key.to_owned(), json!(value));
+                } else {
+                    errors.push(json!({"loc": ["body", key],
+                        "msg": "value could not be parsed to a boolean", "type": "type_error.bool"}));
+                }
+                continue;
             }
-            "auto_save_frequency_seconds" => value.as_u64().is_some_and(|value| value >= 60),
-            "dump_path" => value.as_str().is_some(),
+            "auto_save_frequency_seconds" => {
+                match security_setting_interval(&value) {
+                    Ok(value) => {
+                        normalized.insert(key.to_owned(), json!(value));
+                    }
+                    Err(error) => errors.push(error),
+                }
+                continue;
+            }
+            "dump_path" => {
+                if let Some(value) = security_setting_string(&value) {
+                    normalized.insert(key.to_owned(), json!(value));
+                } else {
+                    errors.push(json!({"loc": ["body", key],
+                        "msg": "str type expected", "type": "type_error.str"}));
+                }
+                continue;
+            }
             "ip_whitelist" | "ip_blacklist" | "xff_trusted_proxies" => {
-                value.as_array().is_some_and(|values| {
-                    values
-                        .iter()
-                        .all(|v| v.as_str().is_some_and(is_valid_ip_or_cidr))
-                })
+                let Value::Array(values) = value else {
+                    errors.push(json!({"loc": ["body", key],
+                        "msg": "value is not a valid list", "type": "type_error.list"}));
+                    continue;
+                };
+                let mut strings = Vec::with_capacity(values.len());
+                for (index, value) in values.iter().enumerate() {
+                    if let Some(value) = security_setting_string(value) {
+                        strings.push(value);
+                    } else if value.is_null() {
+                        errors.push(json!({"loc": ["body", key, index],
+                            "msg": "none is not an allowed value", "type": "type_error.none.not_allowed"}));
+                    } else {
+                        errors.push(json!({"loc": ["body", key, index],
+                            "msg": "str type expected", "type": "type_error.str"}));
+                    }
+                }
+                normalized.insert(key.to_owned(), json!(strings));
             }
             // Pydantic's default model configuration ignores unknown fields.
             _ => continue,
-        };
-        if valid {
-            normalized.insert(key, value);
-        } else {
-            let message_text = if key == "auto_save_frequency_seconds" {
-                "ensure this value is greater than or equal to 60"
-            } else {
-                "invalid security setting value"
-            };
-            errors.push(json!({
-                "loc": ["body", key],
-                "msg": message_text,
-                "type": "value_error"
-            }));
         }
     }
     if errors.is_empty() {
@@ -4779,7 +4951,117 @@ async fn demo_seed(state: &AppState, username: &str, request_id: &str) -> Respon
     message(StatusCode::OK, "Demo data seeded successfully", request_id)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CorsCheckConfig {
+    origins: Vec<String>,
+    safe_origins: Vec<String>,
+    credentials: bool,
+    methods: Vec<String>,
+    headers: Vec<String>,
+    strict: bool,
+    used_wildcard_headers: bool,
+}
+
+fn cors_check_config_from(get: impl Fn(&str) -> Option<String>) -> CorsCheckConfig {
+    let csv = |value: String| {
+        value
+            .split(',')
+            .map(|item| item.trim().to_owned())
+            .filter(|item| !item.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let origins = {
+        let value = get("ALLOWED_ORIGINS").unwrap_or_else(|| "http://localhost:3000".to_owned());
+        let parsed = csv(value);
+        if parsed.is_empty() {
+            vec!["http://localhost:3000".to_owned()]
+        } else {
+            parsed
+        }
+    };
+    let credentials = get("ALLOW_CREDENTIALS")
+        .unwrap_or_else(|| "true".to_owned())
+        .to_lowercase()
+        == "true";
+    let mut methods = {
+        let value = get("ALLOW_METHODS")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD".to_owned());
+        csv(value)
+            .into_iter()
+            .map(|method| method.to_uppercase())
+            .collect::<Vec<_>>()
+    };
+    if methods.iter().any(|method| method == "*") {
+        methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+    }
+    if !methods.iter().any(|method| method == "OPTIONS") {
+        methods.push("OPTIONS".to_owned());
+    }
+    let raw_headers = {
+        let value = get("ALLOW_HEADERS")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "*".to_owned());
+        csv(value)
+    };
+    let used_wildcard_headers = raw_headers.iter().any(|header| header == "*");
+    let headers = if used_wildcard_headers {
+        ["Accept", "Content-Type", "X-CSRF-Token", "Authorization"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        raw_headers
+    };
+    let strict = get("CORS_STRICT")
+        .unwrap_or_else(|| "false".to_owned())
+        .to_lowercase()
+        == "true";
+    let safe_origins = if credentials && origins.iter().any(|origin| origin == "*") {
+        vec![
+            "http://localhost".to_owned(),
+            "http://localhost:3000".to_owned(),
+        ]
+    } else if strict {
+        let safe = origins
+            .iter()
+            .filter(|origin| origin.as_str() != "*")
+            .cloned()
+            .collect::<Vec<_>>();
+        if safe.is_empty() {
+            vec![
+                "http://localhost".to_owned(),
+                "http://localhost:3000".to_owned(),
+            ]
+        } else {
+            safe
+        }
+    } else {
+        origins.clone()
+    };
+    CorsCheckConfig {
+        origins,
+        safe_origins,
+        credentials,
+        methods,
+        headers,
+        strict,
+        used_wildcard_headers,
+    }
+}
+
 fn cors_check(payload: Value, request_id: &str) -> Response {
+    cors_check_with_config(
+        payload,
+        request_id,
+        &cors_check_config_from(|key| env::var(key).ok()),
+    )
+}
+
+fn cors_check_with_config(payload: Value, request_id: &str, config: &CorsCheckConfig) -> Response {
     let origin = payload
         .get("origin")
         .and_then(Value::as_str)
@@ -4803,36 +5085,19 @@ fn cors_check(payload: Value, request_id: &str) -> Response {
                 .collect()
         })
         .unwrap_or_default();
-    let cors_strict = env_bool("CORS_STRICT", true);
-
-    let allowed_origins_str =
-        env::var("ALLOWED_ORIGINS").unwrap_or_else(|_| "http://localhost:3000".to_owned());
-    let origins: Vec<String> = allowed_origins_str
-        .split(',')
-        .map(|s| s.trim().to_owned())
-        .collect();
-    let allow_credentials = env_bool("ALLOW_CREDENTIALS", true);
-    let methods: Vec<String> = env::var("ALLOW_METHODS")
-        .unwrap_or_else(|_| "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS".to_owned())
-        .split(',')
-        .map(|s| s.trim().to_owned())
-        .collect();
-    let headers: Vec<String> = env::var("ALLOW_HEADERS")
-        .unwrap_or_else(|_| "Accept,Content-Type,X-CSRF-Token,Authorization".to_owned())
-        .split(',')
-        .map(|s| s.trim().to_owned())
-        .collect();
-
-    let safe_origins: Vec<String> = origins.iter().filter(|o| *o != "*").cloned().collect();
     let with_credentials = payload
         .get("with_credentials")
         .and_then(Value::as_bool)
-        .unwrap_or(allow_credentials);
+        .unwrap_or(config.credentials);
 
-    let origin_allowed =
-        safe_origins.contains(&origin) || (!cors_strict && origins.iter().any(|o| o == "*"));
-    let method_allowed = methods.iter().any(|m| m.eq_ignore_ascii_case(&method));
-    let allowed_headers_lower: Vec<String> = headers.iter().map(|h| h.to_lowercase()).collect();
+    let origin_allowed = config.safe_origins.contains(&origin)
+        || (!config.strict && config.origins.iter().any(|origin| origin == "*"));
+    let method_allowed = config.methods.iter().any(|candidate| candidate == &method);
+    let allowed_headers_lower: Vec<String> = config
+        .headers
+        .iter()
+        .map(|header| header.to_lowercase())
+        .collect();
     let not_allowed_headers: Vec<String> = request_headers
         .iter()
         .filter(|h| !allowed_headers_lower.contains(&h.to_lowercase()))
@@ -4842,8 +5107,11 @@ fn cors_check(payload: Value, request_id: &str) -> Response {
     let preflight_allowed = origin_allowed && method_allowed && headers_allowed;
 
     let mut notes: Vec<String> = Vec::new();
-    if allow_credentials && origins.iter().any(|o| o == "*") && !cors_strict {
+    if config.credentials && config.origins.iter().any(|origin| origin == "*") && !config.strict {
         notes.push("Wildcard origins with credentials can be rejected by browsers; prefer explicit origins or set CORS_STRICT=true.".into());
+    }
+    if config.used_wildcard_headers {
+        notes.push("ALLOW_HEADERS='*' replaced with a conservative default set to satisfy credentialed requests.".into());
     }
     if !origin_allowed {
         notes.push("Origin is not allowed based on current configuration.".into());
@@ -4860,14 +5128,14 @@ fn cors_check(payload: Value, request_id: &str) -> Response {
 
     let preflight_headers = json!({
         "Access-Control-Allow-Origin": if origin_allowed { &origin } else { "" },
-        "Access-Control-Allow-Methods": methods.join(", "),
-        "Access-Control-Allow-Headers": headers.join(", "),
-        "Access-Control-Allow-Credentials": if with_credentials && allow_credentials { "true" } else { "false" },
+        "Access-Control-Allow-Methods": config.methods.join(", "),
+        "Access-Control-Allow-Headers": config.headers.join(", "),
+        "Access-Control-Allow-Credentials": if with_credentials && config.credentials { "true" } else { "false" },
         "Vary": "Origin",
     });
     let actual_headers = json!({
         "Access-Control-Allow-Origin": if origin_allowed { &origin } else { "" },
-        "Access-Control-Allow-Credentials": if with_credentials && allow_credentials { "true" } else { "false" },
+        "Access-Control-Allow-Credentials": if with_credentials && config.credentials { "true" } else { "false" },
         "Vary": "Origin",
     });
 
@@ -4875,12 +5143,12 @@ fn cors_check(payload: Value, request_id: &str) -> Response {
         StatusCode::OK,
         json!({
             "config": {
-                "allowed_origins": origins,
-                "effective_allowed_origins": safe_origins,
-                "allow_credentials": allow_credentials,
-                "allow_methods": methods,
-                "allow_headers": headers,
-                "cors_strict": cors_strict,
+                "allowed_origins": config.origins,
+                "effective_allowed_origins": config.safe_origins,
+                "allow_credentials": config.credentials,
+                "allow_methods": config.methods,
+                "allow_headers": config.headers,
+                "cors_strict": config.strict,
             },
             "input": {
                 "origin": origin,
@@ -4997,20 +5265,38 @@ async fn subscription_routes(
             .get("api_version")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if storage
+        let api_document = match storage
             .find_one(
                 "apis",
                 &json!({"api_name": api_name, "api_version": api_version}),
             )
             .await
-            .ok()
-            .flatten()
-            .is_none()
         {
+            Ok(Some(api)) => api,
+            _ => {
+                return error(
+                    StatusCode::NOT_FOUND,
+                    if subscribe { "SUB003" } else { "SUB005" },
+                    "API does not exist for the requested name and version",
+                    request_id,
+                );
+            }
+        };
+        // Python's group_required runs before SubscriptionService and evaluates
+        // the user named in the request (which can differ from the actor).
+        // Preserve that policy gate for both subscribing and unsubscribing.
+        let target_user = match storage
+            .find_one("users", &json!({"username": target}))
+            .await
+        {
+            Ok(Some(user)) => user,
+            _ => return unexpected(request_id),
+        };
+        if enforce_group_access(&api_document, &target_user).is_err() {
             return error(
-                StatusCode::NOT_FOUND,
-                if subscribe { "SUB003" } else { "SUB005" },
-                "API does not exist for the requested name and version",
+                StatusCode::FORBIDDEN,
+                if subscribe { "SUB007" } else { "SUB008" },
+                "You do not have the correct group access",
                 request_id,
             );
         }
@@ -6277,9 +6563,23 @@ fn extract_proto_source(headers: &HeaderMap, body: &[u8]) -> Result<String, Stri
         .ok_or_else(|| "Multipart boundary is missing".to_owned())?;
     let text =
         String::from_utf8(body.to_vec()).map_err(|_| "Proto file must be UTF-8".to_owned())?;
-    if !text.to_ascii_lowercase().contains("filename=")
-        || !text.to_ascii_lowercase().contains(".proto")
-    {
+    let disposition = text
+        .lines()
+        .find(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("content-disposition:")
+        })
+        .ok_or_else(|| "Only .proto files are allowed".to_owned())?;
+    let filename = disposition
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| {
+            part.strip_prefix("filename=")
+                .or_else(|| part.strip_prefix("Filename="))
+        })
+        .map(|value| value.trim_matches('"'))
+        .ok_or_else(|| "Only .proto files are allowed".to_owned())?;
+    if !valid_proto_filename(filename) {
         return Err("Only .proto files are allowed".to_owned());
     }
     let header_end = text
@@ -6299,6 +6599,18 @@ fn extract_proto_source(headers: &HeaderMap, body: &[u8]) -> Result<String, Stri
         .unwrap_or(content)
         .trim_end_matches(['\r', '\n'])
         .to_owned())
+}
+
+fn valid_proto_filename(filename: &str) -> bool {
+    filename.ends_with(".proto")
+        && !filename.is_empty()
+        && filename.len() <= 255
+        && !filename.contains("..")
+        && !filename.starts_with(['/', '\\'])
+        && filename.as_bytes().get(1).is_none_or(|byte| *byte != b':')
+        && filename.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
 }
 
 fn extract_proto_package(source: &str) -> Option<String> {
@@ -7173,7 +7485,10 @@ async fn auth_ip_rate_limit(
         return None;
     }
     let storage = state.storage.as_ref()?;
-    let settings = match storage.find_one("settings", &json!({})).await {
+    let settings = match storage
+        .find_one("settings", &json!({"type": "security_settings"}))
+        .await
+    {
         Ok(settings) => settings,
         Err(_) => {
             return Some(error(
@@ -7304,6 +7619,54 @@ async fn auth_account_rate_limit(
     Some(response)
 }
 
+fn content_type_is_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("application/json")
+                || value.to_ascii_lowercase().ends_with("+json")
+        })
+}
+
+fn is_typed_json_mutation(path: &str, method: &Method) -> bool {
+    if !matches!(method, &Method::POST | &Method::PUT | &Method::PATCH) {
+        return false;
+    }
+    [
+        "/api",
+        "/apis",
+        "/endpoint",
+        "/endpoints",
+        "/group",
+        "/role",
+        "/routing",
+        "/tiers",
+        "/rate-limits",
+        "/subscription",
+        "/user",
+        "/users",
+    ]
+    .iter()
+    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+}
+
+fn is_subscription_mutation(path: &str, method: &Method) -> bool {
+    matches!(method, &Method::POST)
+        && matches!(
+            path,
+            "/subscription/subscribe" | "/subscription/unsubscribe"
+        )
+}
+
+fn subscription_payload_has_required_fields(payload: &Value) -> bool {
+    ["username", "api_name", "api_version"]
+        .iter()
+        .all(|field| payload.get(*field).is_some_and(|value| !value.is_null()))
+}
+
 fn parse_query(query: Option<&str>) -> HashMap<String, String> {
     url::form_urlencoded::parse(query.unwrap_or("").as_bytes())
         .into_owned()
@@ -7329,6 +7692,26 @@ fn paginate(items: Vec<Value>, query: &HashMap<String, String>) -> Value {
             .take(page_size)
             .collect::<Vec<_>>()
     })
+}
+
+fn paginate_named(items: Vec<Value>, query: &HashMap<String, String>, name: &str) -> Value {
+    let page = query
+        .get("page")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let page_size = query
+        .get("page_size")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let start = (page - 1).saturating_mul(page_size);
+    let items = items
+        .into_iter()
+        .skip(start)
+        .take(page_size)
+        .collect::<Vec<_>>();
+    json!({"response": {name: items}})
 }
 fn paginate_apis(mut items: Vec<Value>, query: &HashMap<String, String>) -> Value {
     items.sort_by_key(|value| value["api_name"].as_str().unwrap_or_default().to_owned());
@@ -7511,6 +7894,269 @@ fn unix_seconds() -> u64 {
 mod tests {
     use super::*;
 
+    // Oracle: pinned models/security_settings_model.py, Pydantic 1.10.26.
+    #[test]
+    fn security_settings_scalar_coercion_matches_python_model() {
+        for field in [
+            "enable_auto_save",
+            "trust_x_forwarded_for",
+            "allow_localhost_bypass",
+        ] {
+            for (expected, values) in [
+                (
+                    true,
+                    vec![
+                        json!(true),
+                        json!(1),
+                        json!(1.0),
+                        json!("TRUE"),
+                        json!("yes"),
+                        json!("on"),
+                        json!("t"),
+                        json!("Y"),
+                        json!("1"),
+                    ],
+                ),
+                (
+                    false,
+                    vec![
+                        json!(false),
+                        json!(0),
+                        json!(0.0),
+                        json!("FALSE"),
+                        json!("no"),
+                        json!("off"),
+                        json!("f"),
+                        json!("N"),
+                        json!("0"),
+                    ],
+                ),
+            ] {
+                for value in values {
+                    assert_eq!(
+                        normalize_security_settings(json!({field: value})).unwrap()[field],
+                        expected
+                    );
+                }
+            }
+            for value in [
+                json!(2),
+                json!(-1),
+                json!(0.5),
+                json!(" true "),
+                json!(""),
+                json!([]),
+                json!({}),
+            ] {
+                assert_eq!(
+                    normalize_security_settings(json!({field: value})).unwrap_err(),
+                    vec![json!({
+                        "loc": ["body", field], "msg": "value could not be parsed to a boolean", "type": "type_error.bool"
+                    })]
+                );
+            }
+        }
+        for (value, expected) in [
+            (json!(60.9), 60),
+            (json!(120.0), 120),
+            (json!("120"), 120),
+            (json!(" 120 "), 120),
+            (json!("+120"), 120),
+            (json!("1_200"), 1200),
+            (json!("١٢٠"), 120),
+            (json!("１２０"), 120),
+            (json!("𝟙𝟚𝟘"), 120),
+            (json!("1_٢0"), 120),
+            (json!("\u{a0}+١_٢٠\u{3000}"), 120),
+        ] {
+            assert_eq!(
+                normalize_security_settings(json!({"auto_save_frequency_seconds": value})).unwrap()
+                    ["auto_save_frequency_seconds"],
+                expected
+            );
+        }
+        for value in [
+            json!(59),
+            json!(59.9),
+            json!(true),
+            json!(false),
+            json!(-1),
+            json!("-120"),
+            json!("-١٢٠"),
+            json!("٥٩"),
+        ] {
+            assert_eq!(
+                security_setting_interval(&value).unwrap_err(),
+                json!({
+                    "loc": ["body", "auto_save_frequency_seconds"], "msg": "ensure this value is greater than or equal to 60",
+                    "type": "value_error.number.not_ge", "ctx": {"limit_value": 60}
+                })
+            );
+        }
+        for value in [
+            json!("120.0"),
+            json!("1e2"),
+            json!("1__20"),
+            json!("_120"),
+            json!("120_"),
+            json!("١__٢٠"),
+            json!("²⁶⁰"),
+            json!("\u{1c}120\u{1f}"),
+            json!({}),
+            json!([]),
+        ] {
+            assert_eq!(
+                security_setting_interval(&value).unwrap_err()["type"],
+                "type_error.integer"
+            );
+        }
+        assert_eq!(
+            security_setting_interval(&json!(u64::MAX)).unwrap(),
+            u64::MAX
+        );
+        assert!(security_setting_interval(&json!(18_446_744_073_709_551_616.0)).is_err());
+        assert!(
+            normalize_security_settings(json!({"enable_auto_save": null, "unknown": true}))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn security_settings_list_coercion_and_indexed_errors_match_python() {
+        for key in ["ip_whitelist", "ip_blacklist", "xff_trusted_proxies"] {
+            assert_eq!(normalize_security_settings(json!({key: [
+                "203.0.113.1", true, false, 120, 1.0, 1e-5, "invalid-ip", "203.0.113.0/33", "", " 203.0.113.1 "
+            ]})).unwrap()[key], json!([
+                "203.0.113.1", "True", "False", "120", "1.0", "1e-05", "invalid-ip", "203.0.113.0/33", "", " 203.0.113.1 "
+            ]));
+            assert_eq!(
+                normalize_security_settings(json!({key: []})).unwrap()[key],
+                json!([])
+            );
+            assert!(
+                normalize_security_settings(json!({key: null}))
+                    .unwrap()
+                    .is_empty()
+            );
+            for value in [json!("203.0.113.1"), json!({}), json!(120), json!(true)] {
+                assert_eq!(
+                    normalize_security_settings(json!({key: value})).unwrap_err(),
+                    vec![
+                        json!({"loc": ["body", key], "msg": "value is not a valid list", "type": "type_error.list"})
+                    ]
+                );
+            }
+            assert_eq!(
+                normalize_security_settings(json!({key: [null, [], {}, "valid", false]}))
+                    .unwrap_err(),
+                vec![
+                    json!({"loc": ["body", key, 0], "msg": "none is not an allowed value", "type": "type_error.none.not_allowed"}),
+                    json!({"loc": ["body", key, 1], "msg": "str type expected", "type": "type_error.str"}),
+                    json!({"loc": ["body", key, 2], "msg": "str type expected", "type": "type_error.str"})
+                ]
+            );
+        }
+        let errors = normalize_security_settings(json!({
+            "xff_trusted_proxies": [null], "ip_blacklist": [{}], "ip_whitelist": [[], null], "dump_path": {}, "trust_x_forwarded_for": "bad"
+        })).unwrap_err();
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error["loc"].clone())
+                .collect::<Vec<_>>(),
+            vec![
+                json!(["body", "dump_path"]),
+                json!(["body", "ip_whitelist", 0]),
+                json!(["body", "ip_whitelist", 1]),
+                json!(["body", "ip_blacklist", 0]),
+                json!(["body", "trust_x_forwarded_for"]),
+                json!(["body", "xff_trusted_proxies", 0])
+            ]
+        );
+    }
+
+    #[test]
+    fn security_settings_dump_path_coercion_matches_python_model() {
+        for (value, expected) in [
+            (json!("nested/dump.bin"), "nested/dump.bin"),
+            (json!(""), ""),
+            (json!(true), "True"),
+            (json!(false), "False"),
+            (json!(0), "0"),
+            (json!(-12), "-12"),
+            (json!(u64::MAX), "18446744073709551615"),
+            (json!(1.0), "1.0"),
+            (json!(-0.0), "-0.0"),
+            (json!(1.5), "1.5"),
+            (json!(1e-4), "0.0001"),
+            (json!(1e-5), "1e-05"),
+            (json!(-1.25e-5), "-1.25e-05"),
+            (json!(1e-6), "1e-06"),
+            (json!(1e15), "1000000000000000.0"),
+            (json!(1e16), "1e+16"),
+            (json!(1e20), "1e+20"),
+            (json!(1.2345678901234567), "1.2345678901234567"),
+            (
+                json!(f64::from_bits(4833791929896474481)),
+                "1483282338825692.2",
+            ),
+            (
+                json!(f64::from_bits(14056054566791133225)),
+                "-1205932348796426.2",
+            ),
+        ] {
+            assert_eq!(
+                normalize_security_settings(json!({"dump_path": value})).unwrap()["dump_path"],
+                expected
+            );
+        }
+        assert!(
+            normalize_security_settings(json!({"dump_path": null}))
+                .unwrap()
+                .is_empty()
+        );
+        for value in [json!([]), json!({})] {
+            assert_eq!(
+                normalize_security_settings(json!({"dump_path": value})).unwrap_err(),
+                vec![json!({"loc": ["body", "dump_path"],
+                    "msg": "str type expected", "type": "type_error.str"})]
+            );
+        }
+        let errors = normalize_security_settings(json!({
+            "enable_auto_save": "bad", "dump_path": {}, "trust_x_forwarded_for": "bad"
+        }))
+        .unwrap_err();
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error["loc"][1].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["enable_auto_save", "dump_path", "trust_x_forwarded_for"]
+        );
+    }
+
+    #[test]
+    fn security_settings_scalar_errors_follow_python_declaration_order() {
+        let errors = normalize_security_settings(json!({
+            "trust_x_forwarded_for": "bad", "auto_save_frequency_seconds": "bad",
+            "allow_localhost_bypass": "bad", "enable_auto_save": "bad"
+        }))
+        .unwrap_err();
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error["loc"][1].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "enable_auto_save",
+                "auto_save_frequency_seconds",
+                "trust_x_forwarded_for",
+                "allow_localhost_bypass"
+            ]
+        );
+    }
+
     #[test]
     fn self_updates_without_user_management_cannot_change_authorization_fields() {
         assert!(self_update_fields_are_safe(
@@ -7571,5 +8217,140 @@ mod tests {
             ("page_size".to_owned(), "2".to_owned()),
         ]);
         assert_eq!(paginate(items, &query), json!({"response": [2, 3]}));
+    }
+
+    // Oracle: pinned backend-services/routes/tools_routes.py and its CORS checker tests.
+    #[tokio::test]
+    async fn tools_cors_checker_matches_pinned_python_matrix() {
+        let config = |vars: &[(&str, &str)]| {
+            cors_check_config_from(|key| {
+                vars.iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+        };
+        let matching = config(&[
+            ("ALLOWED_ORIGINS", "http://localhost:3000"),
+            ("ALLOW_METHODS", "GET,POST"),
+            ("ALLOW_HEADERS", "Content-Type,X-CSRF-Token"),
+            ("ALLOW_CREDENTIALS", "true"),
+            ("CORS_STRICT", "true"),
+        ]);
+        let allowed = cors_checker_payload(
+            &matching,
+            json!({
+                "origin": "http://localhost:3000",
+                "method": "GET",
+                "request_headers": ["content-type", "X-CSRF-Token"],
+                "with_credentials": true,
+            }),
+        )
+        .await;
+        assert_eq!(allowed["preflight"]["allowed"], true);
+        assert_eq!(
+            allowed["preflight"]["response_headers"]["Access-Control-Allow-Origin"],
+            "http://localhost:3000"
+        );
+        assert_eq!(allowed["actual"]["response_headers"]["Vary"], "Origin");
+
+        let denied_header = cors_checker_payload(
+            &matching,
+            json!({"origin": "http://localhost:3000", "method": "GET", "request_headers": ["X-Custom-Header"]}),
+        )
+        .await;
+        assert_eq!(denied_header["preflight"]["allowed"], false);
+        assert_eq!(
+            denied_header["preflight"]["not_allowed_headers"],
+            json!(["X-Custom-Header"])
+        );
+        let unknown_origin = cors_checker_payload(
+            &matching,
+            json!({"origin": "http://evil.example", "method": "GET"}),
+        )
+        .await;
+        assert_eq!(unknown_origin["actual"]["allowed"], false);
+
+        let denied_method = cors_checker_payload(
+            &config(&[
+                ("ALLOWED_ORIGINS", "http://ok.example"),
+                ("ALLOW_METHODS", "GET"),
+            ]),
+            json!({"origin": "http://ok.example", "method": "DELETE"}),
+        )
+        .await;
+        assert_eq!(denied_method["preflight"]["method_allowed"], false);
+
+        let wildcard = config(&[
+            ("ALLOWED_ORIGINS", "*"),
+            ("ALLOW_CREDENTIALS", "true"),
+            ("CORS_STRICT", "false"),
+        ]);
+        let wildcard_allowed = cors_checker_payload(
+            &wildcard,
+            json!({"origin": "http://arbitrary.example", "method": "GET", "request_headers": []}),
+        )
+        .await;
+        assert_eq!(wildcard_allowed["preflight"]["allow_origin"], true);
+        assert!(
+            wildcard_allowed["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note.as_str().unwrap().contains("Wildcard origins"))
+        );
+        let wildcard_without_credentials = cors_checker_payload(
+            &config(&[
+                ("ALLOWED_ORIGINS", "*"),
+                ("ALLOW_CREDENTIALS", "false"),
+                ("CORS_STRICT", "false"),
+            ]),
+            json!({"origin": "http://any-origin", "method": "GET"}),
+        )
+        .await;
+        assert_eq!(wildcard_without_credentials["actual"]["allowed"], true);
+
+        let strict_wildcard = config(&[
+            ("ALLOWED_ORIGINS", "*"),
+            ("ALLOW_CREDENTIALS", "true"),
+            ("CORS_STRICT", "true"),
+        ]);
+        let wildcard_blocked = cors_checker_payload(
+            &strict_wildcard,
+            json!({"origin": "http://evil.example", "method": "GET", "with_credentials": true, "request_headers": ["Content-Type"]}),
+        )
+        .await;
+        assert_eq!(wildcard_blocked["actual"]["allowed"], false);
+        assert_eq!(
+            wildcard_blocked["preflight"]["response_headers"]["Access-Control-Allow-Origin"],
+            ""
+        );
+        assert_eq!(
+            wildcard_blocked["preflight"]["response_headers"]["Access-Control-Allow-Credentials"],
+            "true"
+        );
+
+        let defaults = config(&[("ALLOW_METHODS", ""), ("ALLOW_HEADERS", "*")]);
+        assert_eq!(
+            defaults.methods,
+            vec!["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"]
+        );
+        assert_eq!(
+            defaults.headers,
+            vec!["Accept", "Content-Type", "X-CSRF-Token", "Authorization"]
+        );
+        let options = cors_checker_payload(
+            &config(&[("ALLOW_METHODS", "GET,POST")]),
+            json!({"origin": "http://localhost:3000", "method": "OPTIONS"}),
+        )
+        .await;
+        assert_eq!(options["preflight"]["method_allowed"], true);
+    }
+
+    async fn cors_checker_payload(config: &CorsCheckConfig, body: Value) -> Value {
+        let response = cors_check_with_config(body, "cors-test", config);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 }

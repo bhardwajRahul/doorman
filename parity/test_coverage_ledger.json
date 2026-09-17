@@ -213,26 +213,29 @@
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_35_public_bulk_onboarding.py::test_bulk_public_graphql_crud",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Three public GraphQL APIs are created with local upstreams; each receives unauthenticated create, update, read, and delete query forms and returns HTTP 200.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_35_bulk_public_graphql_crud_parity"
+      ],
       "source": {
         "line": 145,
         "path": "backend-services/live-tests/test_35_public_bulk_onboarding.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_35_public_bulk_onboarding.py::test_bulk_public_grpc_crud",
-      "notes": "Unreviewed.",
+      "notes": "This pinned function does not provide executable gRPC CRUD behavior; real public gRPC coverage is recorded separately against the live Rust fixture.",
+      "rationale": "The reference test is skipped unless an opt-in environment flag is set, and its only loop is range(0), so it performs no gateway request or assertion even when enabled.",
       "rust_tests": [],
       "source": {
         "line": 275,
         "path": "backend-services/live-tests/test_35_public_bulk_onboarding.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "live/gateway/grpc",
@@ -251,14 +254,19 @@
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_37_public_apis_matrix_live.py::test_public_api_reachability_smoke",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Local upstream integrations provision public REST, GraphQL, SOAP, and gRPC APIs and make unauthenticated calls with successful concrete response assertions, stronger than the reference matrix's non-auth-failure-only condition.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_35_bulk_public_rest_crud_parity",
+        "gateway-rs/tests/live_tests_parity.rs::live_test_35_bulk_public_graphql_crud_parity",
+        "gateway-rs/tests/live_tests_parity.rs::live_test_35_bulk_public_soap_crud_parity",
+        "gateway-rs/tests/live_tests_parity.rs::live_test_36_public_grpc_with_proto_upload_parity"
+      ],
       "source": {
         "line": 252,
         "path": "backend-services/live-tests/test_37_public_apis_matrix_live.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/other",
@@ -275,14 +283,18 @@
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_37_public_apis_matrix_live.py::test_public_api_cors_preflight",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Public REST, GraphQL, SOAP, and gRPC APIs each receive an unauthenticated CORS preflight and assert HTTP 204 before their protocol-specific request flow.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_rest_cors_origin_and_header_matrix",
+        "gateway-rs/tests/platform_native.rs::python_api_graphql_and_soap_cors_preflight",
+        "gateway-rs/tests/live_tests_parity.rs::live_test_36_public_grpc_with_proto_upload_parity"
+      ],
       "source": {
         "line": 299,
         "path": "backend-services/live-tests/test_37_public_apis_matrix_live.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/other",
@@ -323,26 +335,30 @@
     {
       "domain": "live/platform/subscription",
       "id": "backend-services/live-tests/test_38_restricted_subscription_live.py::test_restricted_requires_subscription_then_allows",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A restricted REST gateway request is blocked before the admin subscribes and clears the authorization gate immediately after subscribing.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_21_subscription_list_unsubscribe_parity"
+      ],
       "source": {
         "line": 189,
         "path": "backend-services/live-tests/test_38_restricted_subscription_live.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/platform/subscription",
       "id": "backend-services/live-tests/test_38_restricted_subscription_live.py::test_restricted_unsubscribe_blocks",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The same restricted gateway request is blocked again after the admin unsubscribes.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_21_subscription_list_unsubscribe_parity"
+      ],
       "source": {
         "line": 210,
         "path": "backend-services/live-tests/test_38_restricted_subscription_live.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/gateway/soap",
@@ -515,38 +531,44 @@
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_70_combinations.py::test_endpoint_level_servers_override",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Distinct API and endpoint upstreams are provisioned; real gateway requests prove the matching endpoint selects endpoint-a then endpoint-b before any API-level server.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::routing_precedence_and_round_robin_real_upstreams_parity"
+      ],
       "source": {
         "line": 6,
         "path": "backend-services/live-tests/test_70_combinations.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_80_roles_groups_permissions.py::test_role_permission_blocks_api_management",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The role permission matrix creates a role without manage_apis, asserts its API creation returns HTTP 403/API007, then enables the permission and asserts creation succeeds.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::live_role_permission_matrix_blocks_then_allows_each_management_operation"
+      ],
       "source": {
         "line": 19,
         "path": "backend-services/live-tests/test_80_roles_groups_permissions.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_81_negative_permissions.py::test_negative_permissions_for_logs_and_config",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A logged-in limited role receives HTTP 403 from the log reader, full configuration export, and routing list endpoints.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::management_permissions_readiness_tools_and_restart_preserve_contract"
+      ],
       "source": {
         "line": 25,
         "path": "backend-services/live-tests/test_81_negative_permissions.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/platform/role",
@@ -565,14 +587,16 @@
     {
       "domain": "live/other",
       "id": "backend-services/live-tests/test_83_roles_groups_crud.py::test_roles_groups_crud_and_list",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust creates roles and groups, verifies their individual and paginated list reads, updates them, and deletes both resources through the platform router.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::python_test_roles_and_groups_crud"
+      ],
       "source": {
         "line": 8,
         "path": "backend-services/live-tests/test_83_roles_groups_crud.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/platform/endpoint",
@@ -591,14 +615,16 @@
     {
       "domain": "live/gateway/validation",
       "id": "backend-services/live-tests/test_86_validation_edge_cases.py::test_nested_array_and_format_validations",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust runs the pinned email, UUID, numeric minimum, and nested array-object schema against both the rejected and accepted payload shapes.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 9,
         "path": "backend-services/live-tests/test_86_validation_edge_cases.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/platform/security",
@@ -659,14 +685,16 @@
     {
       "domain": "live/platform/memory",
       "id": "backend-services/live-tests/test_91_memory_dump_restore.py::test_memory_dump_restore_conditionally",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated memory-mode process creates an encrypted snapshot through the management route, restores it through the paired route, and verifies the restored user can be read and log in.",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
       "source": {
         "line": 8,
         "path": "backend-services/live-tests/test_91_memory_dump_restore.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/platform/authorization",
@@ -741,14 +769,16 @@
     {
       "domain": "live/platform/routing",
       "id": "backend-services/live-tests/test_94_routing_and_header_swap.py::test_authorization_field_swap_sets_auth_header",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A local selected upstream receives the configured authorization-source header as Authorization; Rust also covers the missing and empty-source fallback cases.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::authorization_field_swap_matches_python_empty_and_missing_cases"
+      ],
       "source": {
         "line": 81,
         "path": "backend-services/live-tests/test_94_routing_and_header_swap.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/platform/api",
@@ -933,14 +963,16 @@
     {
       "domain": "live/platform/memory",
       "id": "backend-services/live-tests/test_memory_dump_sigusr1_live.py::test_memory_dump_via_route_live",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The process-level route contract sends a configured custom path to the dump endpoint and verifies that the returned .bin snapshot path exists at that requested destination.",
+      "rust_tests": [
+        "gateway-rs/tests/memory_routes_parity.rs::python_memory_route_contracts_in_isolated_processes"
+      ],
       "source": {
         "line": 1,
         "path": "backend-services/live-tests/test_memory_dump_sigusr1_live.py",
         "suite": "live"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "live/gateway/cors",
@@ -1107,14 +1139,16 @@
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_access_control.py::test_roles_and_permissions_enforced",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An administrator creates a no-permission viewer role, group, and user; the authenticated viewer is denied both API creation and log access.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::least_privilege_role_cannot_create_apis_or_read_logs"
+      ],
       "source": {
         "line": 21,
         "path": "backend-services/tests/test_access_control.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
@@ -1131,74 +1165,86 @@
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_admin_bootstrap_parity.py::test_admin_seed_fields_memory_mode",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated memory-store initialization verifies the seeded administrator, full administrator capability set, and both required groups.",
+      "rust_tests": [
+        "gateway-rs/tests/bootstrap_admin_parity.rs::bootstrap_admin_seed_matches_python_and_preserves_existing_credentials"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_admin_bootstrap_parity.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_admin_bootstrap_parity.py::test_admin_seed_helper_is_canonical",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The isolated initializer asserts each canonical administrator role, access, group, rate-limit, and throttle field established by the pinned seed helper.",
+      "rust_tests": [
+        "gateway-rs/tests/bootstrap_admin_parity.rs::bootstrap_admin_seed_matches_python_and_preserves_existing_credentials"
+      ],
       "source": {
         "line": 60,
         "path": "backend-services/tests/test_admin_bootstrap_parity.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_admin_bootstrap_parity.py::test_mongo_bootstrap_seeds_once_without_rotating_existing_credentials",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "After the initial seed, the test changes the process credentials, reruns initialization against the same store, and proves the original admin email and password hash remain intact.",
+      "rust_tests": [
+        "gateway-rs/tests/bootstrap_admin_parity.rs::bootstrap_admin_seed_matches_python_and_preserves_existing_credentials"
+      ],
       "source": {
         "line": 78,
         "path": "backend-services/tests/test_admin_bootstrap_parity.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_admin_positive_paths.py::test_admin_can_view_admin_role_and_user",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated administrator reads the administrator role and verifies administrator records are present in the role and user collection response envelopes.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_admin_positive_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_admin_positive_paths.py::test_admin_can_update_admin_role_description",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated administrator updates the administrator role description and reads back the exact value.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 37,
         "path": "backend-services/tests/test_admin_positive_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_admin_positive_paths.py::test_admin_can_create_and_delete_admin_user",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated administrator creates an administrator-role user, reads it, deletes it, and receives the expected not-found result afterwards.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 49,
         "path": "backend-services/tests/test_admin_positive_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/api",
@@ -1849,14 +1895,15 @@
     {
       "domain": "unit/gateway/cache",
       "id": "backend-services/tests/test_cache_bytes_serialization.py::test_cache_serializes_bytes_password_to_json_string",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "Rust bcrypt produces and stores UTF-8 password-hash strings directly, so there is no bytes-to-JSON cache conversion branch; password hashes remain string values throughout the typed storage path.",
       "rust_tests": [],
       "source": {
         "line": 6,
         "path": "backend-services/tests/test_cache_bytes_serialization.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/other",
@@ -2005,14 +2052,16 @@
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_content_types.py::test_compression_with_rest_gateway_json",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A real public REST gateway returns a large JSON list. Identity and gzip requests verify JSON content type, wire gzip encoding, smaller compressed bytes, and identical decoded JSON.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 22,
         "path": "backend-services/tests/test_compression_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
@@ -2113,134 +2162,145 @@
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_cpu_impact.py::test_cpu_impact_by_response_size",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 119,
         "path": "backend-services/tests/test_compression_cpu_impact.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_cpu_impact.py::test_cpu_overhead_on_total_request_time",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 149,
         "path": "backend-services/tests/test_compression_cpu_impact.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_cpu_impact.py::test_realistic_production_scenario",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 192,
         "path": "backend-services/tests/test_compression_cpu_impact.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_cpu_impact.py::test_two_vcpu_capacity_analysis",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 262,
         "path": "backend-services/tests/test_compression_cpu_impact.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_cpu_impact.py::test_recommended_production_level",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 345,
         "path": "backend-services/tests/test_compression_cpu_impact.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_size_reduction.py::test_json_compression_ratio",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 19,
         "path": "backend-services/tests/test_compression_size_reduction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_size_reduction.py::test_large_list_compression",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 60,
         "path": "backend-services/tests/test_compression_size_reduction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_size_reduction.py::test_compression_bandwidth_savings",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 122,
         "path": "backend-services/tests/test_compression_size_reduction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_size_reduction.py::test_compression_level_affects_ratio",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 171,
         "path": "backend-services/tests/test_compression_size_reduction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_size_reduction.py::test_minimum_size_threshold",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 213,
         "path": "backend-services/tests/test_compression_size_reduction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_compression_size_reduction.py::test_compression_transfer_savings_calculation",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 230,
         "path": "backend-services/tests/test_compression_size_reduction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/config",
@@ -2441,50 +2501,58 @@
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_cookie_domain.py::test_cookie_domain_set_on_login",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "With COOKIE_DOMAIN=testserver and Host=testserver, both login cookies omit Domain and are host-only, producing the testserver cookie-jar domain asserted by the pinned client test.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::cookie_policy_and_host_only_domain_match_python"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_cookie_domain.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_cookies_policy.py::test_default_samesite_strict_and_secure_false",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated child process logs in with the default cookie policy and asserts both cookies are Strict, non-Secure, host-only for testserver, and retain the Python paths and max age.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::cookie_policy_and_host_only_domain_match_python"
+      ],
       "source": {
         "line": 21,
         "path": "backend-services/tests/test_cookies_policy.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_cookies_policy.py::test_cookies_samesite_lax_override",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated child process sets COOKIE_SAMESITE=Lax and asserts the CSRF and access cookies both carry SameSite=Lax without Secure.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::cookie_policy_and_host_only_domain_match_python"
+      ],
       "source": {
         "line": 48,
         "path": "backend-services/tests/test_cookies_policy.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_cookies_policy.py::test_secure_flag_toggles_with_https",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Isolated plain-HTTP and HTTPS_ONLY cases assert non-Secure cookies downgrade SameSite=None to Lax, while HTTPS_ONLY emits Secure SameSite=None cookies.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::cookie_policy_and_host_only_domain_match_python"
+      ],
       "source": {
         "line": 73,
         "path": "backend-services/tests/test_cookies_policy.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/credit",
@@ -2645,158 +2713,184 @@
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_body_size_limit.py::test_request_exceeding_max_body_size_returns_413",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A subprocess sets the pinned 10-byte default, sends an 11-byte REST request with Content-Length, and verifies HTTP 413 with the precise REQ001 envelope.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rest_body_limit_matches_python_configured_boundary_contract"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_gateway_body_size_limit.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_body_size_limit.py::test_request_at_limit_is_allowed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The same isolated 10-byte configuration forwards an exactly 10-byte POST to the local upstream and verifies HTTP 200.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rest_body_limit_matches_python_configured_boundary_contract"
+      ],
       "source": {
         "line": 36,
         "path": "backend-services/tests/test_gateway_body_size_limit.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_body_size_limit.py::test_request_without_content_length_is_allowed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The isolated 10-byte configuration also forwards a bodyless GET without Content-Length and verifies HTTP 200.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rest_body_limit_matches_python_configured_boundary_contract"
+      ],
       "source": {
         "line": 54,
         "path": "backend-services/tests/test_gateway_body_size_limit.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_caches_permissions.py::test_clear_caches_requires_manage_gateway",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated administrator loses manage_gateway through the role update API and is denied cache clearing; restoring that permission makes the same DELETE succeed.",
+      "rust_tests": [
+        "gateway-rs/tests/security_settings_parity.rs::clear_caches_requires_manage_gateway_permission"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_gateway_caches_permissions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_cors_preflight_negatives.py::test_rest_preflight_header_mismatch_does_not_echo_origin",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The REST CORS matrix requests an unconfigured header from an allowed origin and asserts Python-compatible ACAO echoing while the configured allow-header list excludes that requested header.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_rest_cors_origin_and_header_matrix"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_gateway_cors_preflight_negatives.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_enforcement_and_paths.py::test_subscription_required_blocks_without_subscription",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The subscription policy allows an enrolled regular user and verifies a missing enrollment returns the Python-compatible 403 failure.",
+      "rust_tests": [
+        "gateway-rs/src/policy/subscription.rs::checks_user_subscription_list"
+      ],
       "source": {
         "line": 112,
         "path": "backend-services/tests/test_gateway_enforcement_and_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_enforcement_and_paths.py::test_group_required_blocks_when_disallowed_group",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The group policy verifies a missing group intersection returns the Python-compatible 401 failure.",
+      "rust_tests": [
+        "gateway-rs/src/policy/groups.rs::requires_group_intersection_for_legacy_contract"
+      ],
       "source": {
         "line": 146,
         "path": "backend-services/tests/test_gateway_enforcement_and_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_enforcement_and_paths.py::test_path_template_matching",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The route resolver accepts a concrete segment for a brace-delimited endpoint parameter and rejects a path with extra segments.",
+      "rust_tests": [
+        "gateway-rs/src/gateway/resolution.rs::matches_python_path_parameters"
+      ],
       "source": {
         "line": 186,
         "path": "backend-services/tests/test_gateway_enforcement_and_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_enforcement_and_paths.py::test_text_body_forwarding",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The local upstream receives an exact text/plain hello-world POST body through the REST proxy.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 204,
         "path": "backend-services/tests/test_gateway_enforcement_and_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_enforcement_and_paths.py::test_response_header_filtering_excludes_unlisted",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full-router regression verifies that only the configured x-upstream response header reaches the client and x-secret is removed.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_request_and_response_header_allowlists_real_upstream_parity"
+      ],
       "source": {
         "line": 224,
         "path": "backend-services/tests/test_gateway_enforcement_and_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_enforcement_and_paths.py::test_authorization_field_swap",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The direct upstream regression verifies the configured x-backend-auth header is installed as Authorization.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::authorization_field_swap_matches_python_empty_and_missing_cases"
+      ],
       "source": {
         "line": 265,
         "path": "backend-services/tests/test_gateway_enforcement_and_paths.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_flows.py::test_gateway_rest_happy_path",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full authenticated lifecycle creates an API, endpoint, and subscription, then verifies the REST gateway reaches the configured upstream path with HTTP 200.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_30_rest_gateway_basic_crud_and_subscription_parity"
+      ],
       "source": {
         "line": 79,
         "path": "backend-services/tests/test_gateway_flows.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_flows.py::test_gateway_clear_caches",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated administrator deletes /api/caches, receives HTTP 200, and the native response confirms the cache clear operation.",
+      "rust_tests": [
+        "gateway-rs/tests/security_settings_parity.rs::live_clear_all_caches_matches_python"
+      ],
       "source": {
         "line": 128,
         "path": "backend-services/tests/test_gateway_flows.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
@@ -2813,26 +2907,30 @@
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_missing_headers.py::test_grpc_requires_version_header",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A JSON gRPC request without X-API-Version is rejected directly at the gateway boundary with HTTP 400 and the stable version-required error code.",
+      "rust_tests": [
+        "gateway-rs/src/routes/grpc.rs::requires_version_header_for_json_grpc_requests_like_python"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_gateway_missing_headers.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_missing_headers.py::test_graphql_requires_version_header",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full GraphQL gateway route rejects a JSON POST without X-API-Version with HTTP 400 and the stable version-required error contract.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_66_graphql_missing_version_header_parity"
+      ],
       "source": {
         "line": 11,
         "path": "backend-services/tests/test_gateway_missing_headers.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
@@ -2903,134 +3001,156 @@
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_query_params_and_headers_forwarding",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A local selected upstream receives the exact foo=1&bar=2 query string and an allowlisted request header; Rust also asserts the allowlisted X-Upstream response header is returned.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 286,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_post_body_forwarding_json",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The local upstream receives the exact JSON request body and the Rust assertion verifies it arrives unchanged.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 332,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_credit_header_injection_and_user_override",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The local upstream asserts user-key wins over the group credit key in the configured x-api-key header.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 351,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_gateway_sets_request_id_headers",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated REST gateway request through the full router returns HTTP 200 with both X-Request-ID and request_id response headers.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_30_rest_gateway_basic_crud_and_subscription_parity"
+      ],
       "source": {
         "line": 428,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_api_disabled_returns_403",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust disables a configured API and asserts the REST gateway call returns HTTP 403; the same regression also checks GraphQL, gRPC, and SOAP.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_disabled_blocks_rest_graphql_grpc_and_soap"
+      ],
       "source": {
         "line": 444,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_upstream_404_maps_to_gtw005",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A local upstream returns HTTP 404 and the gateway assertion verifies the exact Python-compatible GTW005 error envelope.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::maps_upstream_not_found_to_python_gateway_error"
+      ],
       "source": {
         "line": 485,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_routing_limits.py::test_endpoint_not_found_returns_404_code_gtw003",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A public API with no matching endpoint returns the exact Python-compatible 404 GTW003 envelope and never reaches a fallback upstream.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::missing_endpoint_fails_closed_without_a_fallback"
+      ],
       "source": {
         "line": 500,
         "path": "backend-services/tests/test_gateway_routing_limits.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_validation.py::test_rest_payload_validation_blocks_bad_request",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The REST proxy boundary rejects a configured too-short nested field with HTTP 400/GTW011 before upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::blocks_invalid_payloads_for_every_gateway_protocol_like_python"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_gateway_validation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_validation.py::test_graphql_payload_validation_blocks_bad_request",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The GraphQL proxy boundary scopes the mutation validation schema and rejects a too-short variable with HTTP 400/GTW011 before upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::blocks_invalid_payloads_for_every_gateway_protocol_like_python"
+      ],
       "source": {
         "line": 35,
         "path": "backend-services/tests/test_gateway_validation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_validation.py::test_soap_payload_validation_blocks_bad_request",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The SOAP proxy boundary converts the envelope body and rejects a too-short field with HTTP 400/GTW011 before upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::blocks_invalid_payloads_for_every_gateway_protocol_like_python"
+      ],
       "source": {
         "line": 72,
         "path": "backend-services/tests/test_gateway_validation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_validation.py::test_grpc_payload_validation_blocks_bad_request",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The JSON-to-gRPC proxy boundary validates the message object and rejects a too-short nested field with HTTP 400/GTW011 before upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::blocks_invalid_payloads_for_every_gateway_protocol_like_python"
+      ],
       "source": {
         "line": 114,
         "path": "backend-services/tests/test_gateway_validation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
@@ -3059,14 +3179,16 @@
     {
       "domain": "unit/gateway/general",
       "id": "backend-services/tests/test_gateway_validation.py::test_graphql_payload_validation_allows_good_request",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A real local GraphQL upstream receives the valid named-operation request after endpoint validation rejects the same operation with an undersized variable.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_52_graphql_validation_blocks_invalid_variables_parity"
+      ],
       "source": {
         "line": 258,
         "path": "backend-services/tests/test_gateway_validation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/general",
@@ -3083,98 +3205,114 @@
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_can_authenticate",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The seeded administrator authenticates before every protected lifecycle assertion.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 15,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_hidden_from_user_list",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated administrator's collection response contains the bootstrap administrator record.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 27,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_get_by_username_returns_404",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated administrator reads the bootstrap account by username successfully.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 44,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_get_by_email_returns_404",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated administrator reads the bootstrap account successfully through the email route.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 51,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_cannot_be_updated",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A bootstrap-account email update is rejected with the pinned 403/USR020 contract.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 59,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_cannot_be_deleted",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A bootstrap-account deletion is rejected with the pinned 403/USR021 contract.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 69,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_ghost_admin.py::test_bootstrap_admin_password_cannot_be_changed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A bootstrap-account password update is rejected with the pinned 403/USR022 contract.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::admin_can_read_list_update_and_delete_administrator_resources"
+      ],
       "source": {
         "line": 79,
         "path": "backend-services/tests/test_ghost_admin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_global_logging.py::test_global_logging_middleware_404",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust writes the completed unknown-path request to its gateway activity log and the regression asserts the same 404 status and requested path observable by the pinned logging middleware test.",
+      "rust_tests": [
+        "gateway-rs/tests/security_settings_parity.rs::unknown_path_404_is_written_to_the_gateway_activity_log"
+      ],
       "source": {
         "line": 6,
         "path": "backend-services/tests/test_global_logging.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
@@ -3191,26 +3329,28 @@
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_client_and_envelope.py::test_graphql_uses_gql_client_when_available",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The test only monkeypatches Python's optional gql client and asserts that internal transport selection; Rust has no corresponding optional client branch and its externally visible GraphQL HTTP contract is covered separately.",
       "rust_tests": [],
       "source": {
         "line": 36,
         "path": "backend-services/tests/test_graphql_client_and_envelope.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_client_and_envelope.py::test_graphql_fallback_to_httpx_when_client_unavailable",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The test only monkeypatches Python's optional gql client and asserts that internal transport selection; Rust has no corresponding optional client branch and its externally visible GraphQL HTTP contract is covered separately.",
       "rust_tests": [],
       "source": {
         "line": 87,
         "path": "backend-services/tests/test_graphql_client_and_envelope.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/graphql",
@@ -3229,26 +3369,30 @@
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_client_and_envelope.py::test_graphql_strict_envelope_wraps_response",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full router with STRICT_RESPONSE_ENVELOPE asserts status_code plus a response object, which is the shared response middleware used by GraphQL gateway responses.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::strict_envelope_preserves_legacy_status_tokens_and_probe_shape"
+      ],
       "source": {
         "line": 178,
         "path": "backend-services/tests/test_graphql_client_and_envelope.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_client_and_envelope.py::test_graphql_loose_envelope_returns_raw_response",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The default non-strict full GraphQL gateway flow returns the upstream data object directly rather than wrapping it in a response envelope.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_50_graphql_gateway_basic_flow_parity"
+      ],
       "source": {
         "line": 225,
         "path": "backend-services/tests/test_graphql_client_and_envelope.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/graphql",
@@ -3281,50 +3425,57 @@
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_error_flow_and_status.py::test_graphql_strict_envelope_contains_status_code_field",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The strict response middleware regression asserts status_code 200 and a nested response object on the full router.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::strict_envelope_preserves_legacy_status_tokens_and_probe_shape"
+      ],
       "source": {
         "line": 117,
         "path": "backend-services/tests/test_graphql_error_flow_and_status.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_preflight_positive.py::test_graphql_preflight_positive_allows",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The native GraphQL CORS regression creates the API and verifies a matching OPTIONS request returns the configured allow-origin and headers.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_graphql_and_soap_cors_preflight"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_graphql_preflight_positive.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_soap_grpc_extended.py::test_grpc_missing_version_header_returns_400",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The gRPC gateway's missing-version boundary returns HTTP 400 before policy resolution or upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/routes/grpc.rs::requires_version_header_for_json_grpc_requests_like_python"
+      ],
       "source": {
         "line": 86,
         "path": "backend-services/tests/test_graphql_soap_grpc_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_soap_grpc_extended.py::test_graphql_lowercase_version_header_works",
-      "notes": "Unreviewed.",
+      "notes": "The decorator is pytest.mark.skip with an external-connectivity rationale.",
+      "rationale": "The pinned Python function is unconditionally skipped because it requires external network connectivity, so it supplies no executable compatibility contract.",
       "rust_tests": [],
       "source": {
         "line": 99,
         "path": "backend-services/tests/test_graphql_soap_grpc_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/graphql",
@@ -3389,26 +3540,30 @@
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_soap_preflight_negatives.py::test_graphql_preflight_header_mismatch_removes_acao",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A GraphQL OPTIONS request with X-Not-Allowed returns 204 and omits Access-Control-Allow-Origin.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_graphql_and_soap_cors_preflight"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_graphql_soap_preflight_negatives.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/graphql",
       "id": "backend-services/tests/test_graphql_soap_preflight_negatives.py::test_soap_preflight_header_mismatch_removes_acao",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A SOAP OPTIONS request with X-Not-Allowed returns 204 and omits Access-Control-Allow-Origin.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_graphql_and_soap_cors_preflight"
+      ],
       "source": {
         "line": 43,
         "path": "backend-services/tests/test_graphql_soap_preflight_negatives.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/group",
@@ -3441,50 +3596,58 @@
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_allowlist.py::test_grpc_service_not_in_allowlist_returns_403",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A descriptor-backed JSON gateway request with an unlisted service returns the pinned 403/GTW013 policy contract before descriptor lookup or upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::grpc_allowlist_and_traversal_match_python_gateway_errors"
+      ],
       "source": {
         "line": 42,
         "path": "backend-services/tests/test_grpc_allowlist.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_allowlist.py::test_grpc_method_not_in_allowlist_returns_403",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A configured method allowlist rejects a different method with the pinned 403/GTW013 policy contract.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::grpc_allowlist_and_traversal_match_python_gateway_errors"
+      ],
       "source": {
         "line": 56,
         "path": "backend-services/tests/test_grpc_allowlist.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_allowlist.py::test_grpc_package_not_in_allowlist_returns_403",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A request package outside the configured package allowlist is rejected with 403/GTW013 before descriptor lookup or upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::grpc_allowlist_and_traversal_match_python_gateway_errors"
+      ],
       "source": {
         "line": 70,
         "path": "backend-services/tests/test_grpc_allowlist.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_allowlist.py::test_grpc_invalid_traversal_rejected_400",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A traversal-shaped method name is rejected by identifier validation with the pinned 400/GTW011 gateway contract.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::grpc_allowlist_and_traversal_match_python_gateway_errors"
+      ],
       "source": {
         "line": 84,
         "path": "backend-services/tests/test_grpc_allowlist.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
@@ -3571,14 +3734,16 @@
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_errors_and_retries.py::test_grpc_alt_method_fallback_succeeds",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A descriptor-backed JSON-to-gRPC request receives ABORTED from the package-qualified local HTTP/2 path and succeeds through the Python-compatible unqualified service-path fallback; both upstream paths are counted.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::falls_back_to_unqualified_grpc_method_path_like_python"
+      ],
       "source": {
         "line": 199,
         "path": "backend-services/tests/test_grpc_errors_and_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
@@ -3619,14 +3784,16 @@
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_package_resolution_and_errors.py::test_grpc_uses_api_grpc_package_over_request",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The descriptor-backed unary gateway flow configures an API package and supplies a conflicting request package; it succeeds only through the configured package route.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::dynamically_invokes_unary_grpc_from_json"
+      ],
       "source": {
         "line": 143,
         "path": "backend-services/tests/test_grpc_package_resolution_and_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
@@ -3655,14 +3822,16 @@
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_package_resolution_and_errors.py::test_grpc_unavailable_then_success_with_retry",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A descriptor-backed unary call receives an initial Unavailable status from a local HTTP/2 upstream, retries once, and returns the succeeding response.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::dynamically_invokes_unary_grpc_from_json"
+      ],
       "source": {
         "line": 213,
         "path": "backend-services/tests/test_grpc_package_resolution_and_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
@@ -3703,26 +3872,30 @@
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_package_resolution_and_errors.py::test_grpc_rejects_traversal_in_package",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A traversal-shaped package is rejected by package validation with the pinned 400/GTW011 gateway contract.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::grpc_allowlist_and_traversal_match_python_gateway_errors"
+      ],
       "source": {
         "line": 304,
         "path": "backend-services/tests/test_grpc_package_resolution_and_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
       "id": "backend-services/tests/test_grpc_package_resolution_and_errors.py::test_grpc_proto_missing_returns_404_gtw012",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A JSON gRPC gateway request without a descriptor set returns the pinned 404/GTW012 contract before upstream I/O.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/grpc.rs::grpc_allowlist_and_traversal_match_python_gateway_errors"
+      ],
       "source": {
         "line": 318,
         "path": "backend-services/tests/test_grpc_package_resolution_and_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/grpc",
@@ -4099,62 +4272,72 @@
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_logging_permissions.py::test_logging_routes_permissions",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A role transitions from no log permission to view-only to view-and-export; all reader, export, and download endpoints assert the corresponding HTTP permission contracts and LOG codes.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::least_privilege_role_cannot_create_apis_or_read_logs"
+      ],
       "source": {
         "line": 21,
         "path": "backend-services/tests/test_logging_permissions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_logging_redaction.py::test_logging_redaction_filters_sensitive_values",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The production JSON tracing sink is exercised with raw Authorization, Cookie, access-token, and structured authorization values; the captured emitted JSON contains no secret.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 4,
         "path": "backend-services/tests/test_logging_redaction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_logging_redaction_extended.py::test_redaction_handles_cookies_csrf_and_mixed_cases",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The emitted JSON-sink regression covers Cookie, Set-Cookie, and mixed-case X-CSRF-Token forms.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 4,
         "path": "backend-services/tests/test_logging_redaction_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_logging_redaction_new_patterns.py::test_redacts_set_cookie_and_x_api_key",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The sink regression asserts Set-Cookie and X-API-Key are redacted in free-form messages and structured x_api_key fields.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 20,
         "path": "backend-services/tests/test_logging_redaction_new_patterns.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_logging_redaction_new_patterns.py::test_redacts_bearer_and_basic_tokens",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The sink regression emits Bearer and Basic credentials and proves their values never reach JSON output.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 29,
         "path": "backend-services/tests/test_logging_redaction_new_patterns.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/ip-policy",
@@ -4173,14 +4356,16 @@
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_and_sigusr1.py::test_memory_dump_writes_file_when_memory_mode",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A real memory-mode gateway receives SIGUSR1, writes an encrypted dump to the current configured directory, and restores its API data after a restart.",
+      "rust_tests": [
+        "gateway-rs/tests/process_lifecycle.rs::sigusr1_uses_updated_settings_and_crash_restart_recovers"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_memory_dump_and_sigusr1.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
@@ -4197,14 +4382,16 @@
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_and_sigusr1.py::test_sigusr1_handler_registered_on_unix",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The Unix process lifecycle test sends SIGUSR1 to the running gateway and asserts the handler's completion log plus persisted snapshot behavior.",
+      "rust_tests": [
+        "gateway-rs/tests/process_lifecycle.rs::sigusr1_uses_updated_settings_and_crash_restart_recovers"
+      ],
       "source": {
         "line": 27,
         "path": "backend-services/tests/test_memory_dump_and_sigusr1.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
@@ -4333,14 +4520,16 @@
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_dump_util_extended.py::test_dump_and_restore_roundtrip_with_bytes",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An encrypted binary dump is read back exactly; a real storage snapshot is restored after mutation, while wrong-key and tampered byte sequences are rejected atomically.",
+      "rust_tests": [
+        "gateway-rs/src/storage/snapshot.rs::failed_restore_is_atomic_and_exact_file_restore_succeeds"
+      ],
       "source": {
         "line": 112,
         "path": "backend-services/tests/test_memory_dump_util_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
@@ -4415,134 +4604,156 @@
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_cors_wildcard_without_credentials_allows",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts non-strict wildcard origins without credentials allow an arbitrary origin.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 74,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_cors_wildcard_with_credentials_strict_blocks",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts strict wildcard credentials reject an arbitrary origin.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 86,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_cors_checker_implicitly_allows_options",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts OPTIONS is appended when ALLOW_METHODS omits it.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 98,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_cors_headers_case_insensitive",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts configured headers match requested headers case-insensitively.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 112,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_cors_checker_vary_origin_present",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts Vary: Origin is present on both preflight and actual response descriptions.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 126,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/memory",
       "id": "backend-services/tests/test_memory_routes_and_tools_e2e.py::test_cors_checker_disallows_unknown_origin",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts an origin outside the explicit allowlist is rejected.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 137,
         "path": "backend-services/tests/test_memory_routes_and_tools_e2e.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/metrics",
       "id": "backend-services/tests/test_metrics_persistence.py::test_metrics_persist_and_restore",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Records metrics, atomically persists the Python-compatible JSON shape, loads an empty snapshot to clear every public aggregate, then restores and compares points, status distribution, and API/user/endpoint counters exactly.",
+      "rust_tests": [
+        "gateway-rs/src/observability/analytics_aggregator.rs::persists_and_restores_python_compatible_metrics"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_metrics_persistence.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/metrics",
       "id": "backend-services/tests/test_metrics_ranges_extended.py::test_metrics_range_parameters",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Authenticated monitor requests exercise 1h, 24h, 7d, and 30d and each returns an object with the pinned series and status-counts shapes.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::monitor_metrics_accepts_python_range_parameters_parity"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_metrics_ranges_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/metrics",
       "id": "backend-services/tests/test_metrics_symmetry_envelope_ids.py::test_metrics_bytes_in_uses_content_length",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A live subscribed gateway request with a concrete body verifies monitor total_bytes_in grows by at least the raw payload bytes and total_bytes_out increases after the local upstream response.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::monitor_tracks_gateway_bytes_in_and_out_parity"
+      ],
       "source": {
         "line": 8,
         "path": "backend-services/tests/test_metrics_symmetry_envelope_ids.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/metrics",
       "id": "backend-services/tests/test_metrics_symmetry_envelope_ids.py::test_response_envelope_for_non_json_error",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A non-handler oversized platform request receives 413 with a parseable JSON error body containing REQ001.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_uses_the_configured_default_request_body_limit"
+      ],
       "source": {
         "line": 92,
         "path": "backend-services/tests/test_metrics_symmetry_envelope_ids.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/metrics",
       "id": "backend-services/tests/test_metrics_symmetry_envelope_ids.py::test_unique_route_ids_are_stable",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Fetches the pinned OpenAPI document twice and verifies stable lowercase underscore operationIds for the same three reference operations.",
+      "rust_tests": [
+        "gateway-rs/tests/openapi_parity.rs::pinned_openapi_operation_ids_are_stable_and_lowercase"
+      ],
       "source": {
         "line": 112,
         "path": "backend-services/tests/test_metrics_symmetry_envelope_ids.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/monitor",
@@ -4753,86 +4964,107 @@
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 6,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_traversal",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 11,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_outside_allowed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 16,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_temp_dir",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 22,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_complex_traversal",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 28,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_same_dir",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 33,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_path_validation_deep.py::test_validate_path_prefix_attack",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust proto upload accepts no destination path: it validates a filename and compiles supplied source only in a fresh per-request temporary directory, replacing Python's reusable project-root path helper with a narrower boundary.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 36,
         "path": "backend-services/tests/test_path_validation_deep.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/other",
@@ -4861,50 +5093,58 @@
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_platform_admin_visibility.py::test_non_admin_cannot_see_admin_role",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A manager with role-management permission receives a role collection without the admin role and a 404 for direct admin-role lookup.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::non_admin_managers_cannot_discover_or_manage_bootstrap_admin"
+      ],
       "source": {
         "line": 61,
         "path": "backend-services/tests/test_platform_admin_visibility.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_platform_admin_visibility.py::test_non_admin_cannot_see_or_modify_admin_users",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A manager with user-management permission cannot see administrator-role users in the collection, gets 404 for direct lookup, and receives 403 for update and delete attempts.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::non_admin_managers_cannot_discover_or_manage_bootstrap_admin"
+      ],
       "source": {
         "line": 78,
         "path": "backend-services/tests/test_platform_admin_visibility.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_platform_admin_visibility.py::test_non_admin_cannot_assign_admin_role",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A manager with user-management permission is denied when trying to create an administrator-role user.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::non_admin_managers_cannot_discover_or_manage_bootstrap_admin"
+      ],
       "source": {
         "line": 99,
         "path": "backend-services/tests/test_platform_admin_visibility.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_platform_admin_visibility.py::test_non_admin_auth_admin_ops_hidden",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A manager with manage-auth permission is denied or receives not-found for administrator status, revoke, unrevoke, disable, and enable operations.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::non_admin_managers_cannot_discover_or_manage_bootstrap_admin"
+      ],
       "source": {
         "line": 125,
         "path": "backend-services/tests/test_platform_admin_visibility.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/cors",
@@ -5353,26 +5593,29 @@
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_proto_upload_missing_tools.py::test_proto_upload_succeeds_or_fails_gracefully",
-      "notes": "Unreviewed.",
+      "notes": "The pinned Python function is unconditionally skipped with pytest.mark.skip because its import mocking hangs the suite, so it supplies no executable behavior to reproduce.",
+      "rationale": "The reference suite disables this function unconditionally, so it is not an executable Python compatibility contract.",
       "rust_tests": [],
       "source": {
         "line": 6,
         "path": "backend-services/tests/test_proto_upload_missing_tools.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_proto_upload_security_and_import.py::test_proto_upload_rejects_invalid_filename",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Authenticated multipart upload with ../svc.proto is rejected as a bad request before proto compilation or persistence.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_upload_rejects_traversal_filename"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_proto_upload_security_and_import.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
@@ -5413,14 +5656,16 @@
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_proto_upload_security_and_import.py::test_proto_get_requires_permission",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A logged-in role without manage_apis receives HTTP 403/API008 when retrieving a proto, before existence is disclosed.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::proto_retrieval_requires_manage_apis_permission"
+      ],
       "source": {
         "line": 93,
         "path": "backend-services/tests/test_proto_upload_security_and_import.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
@@ -5543,50 +5788,58 @@
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestRateLimiter::test_sliding_window_within_limit",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The rate limiter allows the first request in a configured window and preserves the user-scoped counter contract.",
+      "rust_tests": [
+        "gateway-rs/src/policy/rate_limit.rs::enforces_user_rate_window"
+      ],
       "source": {
         "line": 78,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestRateLimiter::test_sliding_window_exceeds_limit",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A prior-window count weighted into the new window causes the configured sliding-window limit to return HTTP 429 policy failure.",
+      "rust_tests": [
+        "gateway-rs/src/policy/rate_limit.rs::enforces_sliding_window"
+      ],
       "source": {
         "line": 88,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestRateLimiter::test_token_bucket_allows_burst",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The request policy invokes a configured token bucket and permits its base capacity plus explicit burst allowance.",
+      "rust_tests": [
+        "gateway-rs/src/policy/rate_limit.rs::token_bucket_allows_configured_burst_then_blocks_and_refills"
+      ],
       "source": {
         "line": 97,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestRateLimiter::test_burst_tokens_exhausted",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The request policy rejects the request immediately after all configured base and burst tokens are consumed.",
+      "rust_tests": [
+        "gateway-rs/src/policy/rate_limit.rs::token_bucket_allows_configured_burst_then_blocks_and_refills"
+      ],
       "source": {
         "line": 105,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
@@ -5615,50 +5868,58 @@
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestQuotaTracker::test_quota_within_limit",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The quota usage status reports the Python-compatible remaining amount and no warning below 80% usage.",
+      "rust_tests": [
+        "gateway-rs/src/policy/quota.rs::quota_usage_thresholds_match_python_tracker"
+      ],
       "source": {
         "line": 141,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestQuotaTracker::test_quota_warning_threshold",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The quota status enters warning at 80% usage without entering critical status.",
+      "rust_tests": [
+        "gateway-rs/src/policy/quota.rs::quota_usage_thresholds_match_python_tracker"
+      ],
       "source": {
         "line": 151,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestQuotaTracker::test_quota_critical_threshold",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The quota status enters critical status at 95% usage.",
+      "rust_tests": [
+        "gateway-rs/src/policy/quota.rs::quota_usage_thresholds_match_python_tracker"
+      ],
       "source": {
         "line": 160,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestQuotaTracker::test_quota_exhausted",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A quota at its limit is exhausted, disallowed, and reports zero remaining.",
+      "rust_tests": [
+        "gateway-rs/src/policy/quota.rs::quota_usage_thresholds_match_python_tracker"
+      ],
       "source": {
         "line": 168,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
@@ -5675,74 +5936,80 @@
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestIPRateLimiter::test_extract_ip_from_forwarded_for",
-      "notes": "Unreviewed.",
+      "notes": "Reference-tree call-site audit: no deployed caller outside utils/ip_rate_limiter.py itself.",
+      "rationale": "Pinned IPRateLimiter is not constructed or imported by the mounted Python application: the production entry point mounts TierRateLimitMiddleware only, and a reference-tree search finds no non-test caller of IPRateLimiter/get_ip_rate_limiter. These direct mock unit tests therefore do not define deployed behavior. Rust separately covers its mounted API IP-policy semantics.",
       "rust_tests": [],
       "source": {
         "line": 195,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestIPRateLimiter::test_extract_ip_from_real_ip",
-      "notes": "Unreviewed.",
+      "notes": "Reference-tree call-site audit: no deployed caller outside utils/ip_rate_limiter.py itself.",
+      "rationale": "Pinned IPRateLimiter is not constructed or imported by the mounted Python application: the production entry point mounts TierRateLimitMiddleware only, and a reference-tree search finds no non-test caller of IPRateLimiter/get_ip_rate_limiter. These direct mock unit tests therefore do not define deployed behavior. Rust separately covers its mounted API IP-policy semantics.",
       "rust_tests": [],
       "source": {
         "line": 204,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestIPRateLimiter::test_whitelist_bypasses_limit",
-      "notes": "Unreviewed.",
+      "notes": "Reference-tree call-site audit: no deployed caller outside utils/ip_rate_limiter.py itself.",
+      "rationale": "Pinned IPRateLimiter is not constructed or imported by the mounted Python application: the production entry point mounts TierRateLimitMiddleware only, and a reference-tree search finds no non-test caller of IPRateLimiter/get_ip_rate_limiter. These direct mock unit tests therefore do not define deployed behavior. Rust separately covers its mounted API IP-policy semantics.",
       "rust_tests": [],
       "source": {
         "line": 213,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestIPRateLimiter::test_blacklist_blocks_request",
-      "notes": "Unreviewed.",
+      "notes": "Reference-tree call-site audit: no deployed caller outside utils/ip_rate_limiter.py itself.",
+      "rationale": "Pinned IPRateLimiter is not constructed or imported by the mounted Python application: the production entry point mounts TierRateLimitMiddleware only, and a reference-tree search finds no non-test caller of IPRateLimiter/get_ip_rate_limiter. These direct mock unit tests therefore do not define deployed behavior. Rust separately covers its mounted API IP-policy semantics.",
       "rust_tests": [],
       "source": {
         "line": 222,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestIPRateLimiter::test_reputation_reduces_limits",
-      "notes": "Unreviewed.",
+      "notes": "Reference-tree call-site audit: no deployed caller outside utils/ip_rate_limiter.py itself.",
+      "rationale": "Pinned IPRateLimiter is not constructed or imported by the mounted Python application: the production entry point mounts TierRateLimitMiddleware only, and a reference-tree search finds no non-test caller of IPRateLimiter/get_ip_rate_limiter. These direct mock unit tests therefore do not define deployed behavior. Rust separately covers its mounted API IP-policy semantics.",
       "rust_tests": [],
       "source": {
         "line": 230,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestIPRateLimiter::test_reputation_score_update",
-      "notes": "Unreviewed.",
+      "notes": "Reference-tree call-site audit: no deployed caller outside utils/ip_rate_limiter.py itself.",
+      "rationale": "Pinned IPRateLimiter is not constructed or imported by the mounted Python application: the production entry point mounts TierRateLimitMiddleware only, and a reference-tree search finds no non-test caller of IPRateLimiter/get_ip_rate_limiter. These direct mock unit tests therefore do not define deployed behavior. Rust separately covers its mounted API IP-policy semantics.",
       "rust_tests": [],
       "source": {
         "line": 240,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/rate-limits",
@@ -5807,26 +6074,30 @@
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestBurstHandling::test_burst_allows_spike",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The policy admits a spike within the explicit burst allowance.",
+      "rust_tests": [
+        "gateway-rs/src/policy/rate_limit.rs::token_bucket_allows_configured_burst_then_blocks_and_refills"
+      ],
       "source": {
         "line": 366,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
       "id": "backend-services/tests/test_rate_limiter.py::TestBurstHandling::test_burst_refills_over_time",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Half a configured two-second window refills one token, which the policy then admits.",
+      "rust_tests": [
+        "gateway-rs/src/policy/rate_limit.rs::token_bucket_allows_configured_burst_then_blocks_and_refills"
+      ],
       "source": {
         "line": 375,
         "path": "backend-services/tests/test_rate_limiter.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/rate-limits",
@@ -5891,62 +6162,67 @@
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_real_compression_benchmarks.py::test_realistic_rest_api_response_compression",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 22,
         "path": "backend-services/tests/test_real_compression_benchmarks.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_real_compression_benchmarks.py::test_typical_api_gateway_request_flow",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 101,
         "path": "backend-services/tests/test_real_compression_benchmarks.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_real_compression_benchmarks.py::test_large_list_response_compression",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 152,
         "path": "backend-services/tests/test_real_compression_benchmarks.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_real_compression_benchmarks.py::test_worst_case_already_compressed_data",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 237,
         "path": "backend-services/tests/test_real_compression_benchmarks.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_real_compression_benchmarks.py::test_compression_cpu_overhead_estimate",
-      "notes": "Unreviewed.",
+      "notes": "Reference test is a local gzip benchmark/calculation rather than a server compression contract.",
+      "rationale": "The pinned test manually gzip-compresses locally constructed bytes or an already decoded HTTP response. It never asks the server for gzip and never observes Content-Encoding or wire bytes, so its ratio/timing calculation is not executable gateway-compression behavior. Actual Rust compression is separately exercised with raw negotiated response bytes.",
       "rust_tests": [],
       "source": {
         "line": 270,
         "path": "backend-services/tests/test_real_compression_benchmarks.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/other",
@@ -5999,62 +6275,72 @@
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_request_id_and_logging_redaction.py::test_request_id_middleware_injects_header_when_missing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The platform security regression sends a request without an ID and asserts nonempty paired request_id and X-Request-ID response headers.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_security_headers_csp_hsts_and_request_ids_match_python"
+      ],
       "source": {
         "line": 8,
         "path": "backend-services/tests/test_request_id_and_logging_redaction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_request_id_and_logging_redaction.py::test_request_id_middleware_preserves_existing_header",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The platform security regression supplies python-request-id and asserts both response request-ID headers preserve it exactly.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_security_headers_csp_hsts_and_request_ids_match_python"
+      ],
       "source": {
         "line": 15,
         "path": "backend-services/tests/test_request_id_and_logging_redaction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_request_id_and_logging_redaction.py::test_logging_redacts_authorization_headers",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Authorization header values are exercised through the production JSON sink and are replaced before emission.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 34,
         "path": "backend-services/tests/test_request_id_and_logging_redaction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_request_id_and_logging_redaction.py::test_logging_redacts_access_refresh_tokens",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Access-token and refresh-token assignments are emitted through the JSON sink and redacted before output.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 40,
         "path": "backend-services/tests/test_request_id_and_logging_redaction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/logging",
       "id": "backend-services/tests/test_request_id_and_logging_redaction.py::test_logging_redacts_cookie_values",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Cookie and Set-Cookie values are redacted at the JSON sink boundary.",
+      "rust_tests": [
+        "gateway-rs/src/observability/logging.rs::json_sink_redacts_free_form_messages_and_sensitive_fields"
+      ],
       "source": {
         "line": 46,
         "path": "backend-services/tests/test_request_id_and_logging_redaction.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
@@ -6071,38 +6357,44 @@
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_enabled_for_json_response",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A real large JSON gateway response requested with gzip has Content-Encoding: gzip and decodes exactly to its identity response.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 20,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_reduces_response_size",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A real gateway upstream response is requested with identity and gzip; Rust asserts valid gzip wire bytes are smaller than the identity payload.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 32,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_with_large_json_list",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A real large JSON list through the REST gateway is gzip-negotiated, is smaller on the wire, and preserves its exact decoded JSON document.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 53,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
@@ -6131,26 +6423,30 @@
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_no_compression_when_not_requested",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The identity request to the real gateway response has no Content-Encoding before the gzip variant is tested.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 124,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_preserves_response_body",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust decompresses the gateway's gzip payload and asserts byte-for-byte equality with the identity response.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 136,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
@@ -6179,50 +6475,58 @@
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_with_cache_headers",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The real gzip response retains its normal response headers and declares Accept-Encoding in Vary.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 207,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_configuration_defaults",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust test configuration matches Python defaults: enabled, level 6, and a 500-byte threshold.",
+      "rust_tests": [
+        "gateway-rs/src/config.rs::compression_defaults_match_python"
+      ],
       "source": {
         "line": 216,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression.py::test_compression_with_large_payload",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An 800-byte local upstream payload is compressed by the full gateway router and round-trips through decompression.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 230,
         "path": "backend-services/tests/test_response_compression.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/compression",
       "id": "backend-services/tests/test_response_compression_edges.py::test_large_response_is_compressed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An 800-byte local upstream payload requested with gzip has Content-Encoding gzip and valid gzip magic bytes.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rust_compresses_large_gateway_responses_when_requested"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_response_compression_edges.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
@@ -6299,290 +6603,332 @@
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_authorization_field_swap.py::test_auth_swap_injects_authorization_from_custom_header",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A local upstream verifies a configured custom header becomes Authorization.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::authorization_field_swap_matches_python_empty_and_missing_cases"
+      ],
       "source": {
         "line": 121,
         "path": "backend-services/tests/test_rest_authorization_field_swap.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_authorization_field_swap.py::test_auth_swap_missing_source_header_no_crash",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The same direct gateway test verifies a missing configured source leaves Authorization absent and returns normally.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::authorization_field_swap_matches_python_empty_and_missing_cases"
+      ],
       "source": {
         "line": 142,
         "path": "backend-services/tests/test_rest_authorization_field_swap.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_authorization_field_swap.py::test_auth_swap_with_empty_value_does_not_override",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The direct gateway test verifies a blank source preserves the original Authorization header.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::authorization_field_swap_matches_python_empty_and_missing_cases"
+      ],
       "source": {
         "line": 159,
         "path": "backend-services/tests/test_rest_authorization_field_swap.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_retry_on_500_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated full-router regression configures one retry and verifies a 500 then 200 upstream sequence makes two calls and returns 200.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_retries_real_upstream_status_sequences_parity"
+      ],
       "source": {
         "line": 125,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_retry_on_502_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated full-router regression verifies a 502 then 200 upstream sequence makes two calls and returns 200.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_retries_real_upstream_status_sequences_parity"
+      ],
       "source": {
         "line": 138,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_retry_on_503_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated full-router regression verifies a 503 then 200 upstream sequence makes two calls and returns 200.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_retries_real_upstream_status_sequences_parity"
+      ],
       "source": {
         "line": 151,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_retry_on_504_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated full-router regression verifies a 504 then 200 upstream sequence makes two calls and returns 200.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_retries_real_upstream_status_sequences_parity"
+      ],
       "source": {
         "line": 164,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_no_retry_when_retry_count_zero",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full-router regression gives a 500 response to an API configured with zero retries and verifies only one upstream call occurs.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_retries_real_upstream_status_sequences_parity"
+      ],
       "source": {
         "line": 177,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_retry_stops_after_limit",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full-router regression gives 500, 500, then 200 to an API configured with one retry and verifies it stops after the second attempt.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::rest_retries_real_upstream_status_sequences_parity"
+      ],
       "source": {
         "line": 190,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_gateway_retries.py::test_rest_retry_preserves_headers_and_params",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A 503 then 200 upstream records both requests and verifies each retains the configured x-custom header and foo=bar query string.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::retries_transient_upstream_statuses"
+      ],
       "source": {
         "line": 203,
         "path": "backend-services/tests/test_rest_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_header_allowlist_forwards_only_allowed_headers_case_insensitive",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The local upstream receives lowercase x-test when the configured allowlist uses X-Test, proving case-insensitive allowlist matching.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 117,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_header_block_non_allowlisted_headers",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The local upstream explicitly reports the unlisted x-secret request header as absent.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 140,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_response_parse_application_json",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The pinned static parse_response helper has no production call site; Python gateway routes proxy the upstream response directly, so no Rust endpoint contract depends on this isolated helper.",
       "rust_tests": [],
       "source": {
         "line": 157,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_response_parse_text_plain_fallback",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The pinned static parse_response helper has no production call site; Python gateway routes proxy the upstream response directly, so no Rust endpoint contract depends on this isolated helper.",
       "rust_tests": [],
       "source": {
         "line": 166,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_response_parse_application_xml",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The pinned static parse_response helper has no production call site; Python gateway routes proxy the upstream response directly, so no Rust endpoint contract depends on this isolated helper.",
       "rust_tests": [],
       "source": {
         "line": 175,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_response_parse_malformed_json_as_text",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The pinned static parse_response helper has no production call site; Python gateway routes proxy the upstream response directly, so no Rust endpoint contract depends on this isolated helper.",
       "rust_tests": [],
       "source": {
         "line": 186,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_response_binary_passthrough_no_decode",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The pinned static parse_response helper has no production call site; Python gateway routes proxy the upstream response directly, so no Rust endpoint contract depends on this isolated helper.",
       "rust_tests": [],
       "source": {
         "line": 195,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_response_malformed_json_with_application_json_raises",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The pinned static parse_response helper has no production call site; Python gateway routes proxy the upstream response directly, so no Rust endpoint contract depends on this isolated helper.",
       "rust_tests": [],
       "source": {
         "line": 204,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_header_and_response_parsing.py::test_rest_gateway_returns_500_on_malformed_json_upstream",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A local REST upstream sends malformed application/json and the gateway verifies HTTP 500 with a structured error envelope.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::rejects_malformed_json_from_rest_upstream_like_python"
+      ],
       "source": {
         "line": 216,
         "path": "backend-services/tests/test_rest_header_and_response_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_methods_and_405.py::test_rest_head_supported_when_upstream_allows",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A full REST request with HEAD resolves the registered GET endpoint and the local upstream returns HTTP 200.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::rest_head_uses_a_registered_get_endpoint_like_python"
+      ],
       "source": {
         "line": 145,
         "path": "backend-services/tests/test_rest_methods_and_405.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_methods_and_405.py::test_rest_patch_supported_when_registered",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full authenticated control-plane setup registers PATCH, invokes the public REST route, and verifies the upstream receives PATCH at the configured endpoint.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::python_gateway_patch_support_forwards_to_upstream"
+      ],
       "source": {
         "line": 156,
         "path": "backend-services/tests/test_rest_methods_and_405.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_methods_and_405.py::test_rest_options_unregistered_endpoint_returns_405",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated process enables STRICT_OPTIONS_405 and verifies an existing API with no matching REST endpoint returns HTTP 405.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::strict_options_returns_405_for_an_unregistered_rest_endpoint"
+      ],
       "source": {
         "line": 169,
         "path": "backend-services/tests/test_rest_methods_and_405.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_methods_and_405.py::test_rest_unsupported_method_returns_405",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A configured REST API receives TRACE at a registered GET path and the router returns HTTP 405 before proxy resolution.",
+      "rust_tests": [
+        "gateway-rs/tests/runtime.rs::unsupported_rest_method_returns_405_like_python"
+      ],
       "source": {
         "line": 191,
         "path": "backend-services/tests/test_rest_methods_and_405.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/rest",
       "id": "backend-services/tests/test_rest_preflight_positive.py::test_rest_preflight_positive_allows",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The native REST CORS matrix creates a configured API and verifies a matching OPTIONS request returns 204 with the origin and Content-Type allow header.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::python_api_rest_cors_origin_and_header_matrix"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_rest_preflight_positive.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/role",
@@ -6601,62 +6947,73 @@
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_roles_groups_subscriptions.py::test_roles_crud",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust performs the pinned role create, detail read, paginated list, update, and delete flow through the native platform router.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::python_test_roles_and_groups_crud"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_roles_groups_subscriptions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_roles_groups_subscriptions.py::test_groups_crud",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust performs the pinned group create, detail read, paginated list, update, and delete flow through the native platform router.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::python_test_roles_and_groups_crud"
+      ],
       "source": {
         "line": 40,
         "path": "backend-services/tests/test_roles_groups_subscriptions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_roles_groups_subscriptions.py::test_subscriptions_flow",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust creates the pinned API, subscribes admin, verifies the subscription list contains the API, then unsubscribes through the native platform router.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_21_subscription_list_unsubscribe_parity"
+      ],
       "source": {
         "line": 63,
         "path": "backend-services/tests/test_roles_groups_subscriptions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_roles_groups_subscriptions.py::test_token_defs_and_deduction_on_gateway",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust creates a pinned credit definition and admin assignment, verifies the assignment readback, then makes a real upstream gateway call that receives the configured credential header and decrements the user's credits.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_20_credit_defs_and_user_overrides_parity",
+        "gateway-rs/tests/live_tests_parity.rs::live_test_30_credits_and_header_injection_parity"
+      ],
       "source": {
         "line": 97,
         "path": "backend-services/tests/test_roles_groups_subscriptions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/routing",
       "id": "backend-services/tests/test_routing_crud_permissions.py::test_routing_crud_requires_manage_routings",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust verifies a limited user is denied routing creation, while a routing manager can create, list, update, and delete a routing record.",
+      "rust_tests": [
+        "gateway-rs/tests/roles_groups_parity.rs::routing_crud_requires_manage_routings_and_allows_routing_manager"
+      ],
       "source": {
         "line": 21,
         "path": "backend-services/tests/test_routing_crud_permissions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/routing",
@@ -6717,14 +7074,16 @@
     {
       "domain": "unit/platform/routing",
       "id": "backend-services/tests/test_routing_precedence_and_round_robin.py::test_routing_round_robin_index_persists_in_cache",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The full router's rest_round_robin_state fixture repeats requests and reads the shared endpoint_server_cache index after each request, asserting persisted modulo rotation.",
+      "rust_tests": [
+        "gateway-rs/tests/parity_contracts.rs::rust_matches_checked_in_wire_contracts"
+      ],
       "source": {
         "line": 175,
         "path": "backend-services/tests/test_routing_precedence_and_round_robin.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
@@ -6741,38 +7100,46 @@
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security.py::test_jwt_tamper_rejected",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A structurally valid token signed with the wrong HS256 secret is sent as the access cookie; Rust returns HTTP 401 with AUTH003/Unauthorized.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::tampered_jwt_is_rejected_with_python_compatible_unauthorized_status"
+      ],
       "source": {
         "line": 6,
         "path": "backend-services/tests/test_security.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security.py::test_csrf_required_when_https",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "HTTPS-mode requests with an access cookie and missing or mismatched CSRF token return HTTP 401; a matching token succeeds.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::https_mode_requires_matching_csrf_and_preserves_request_id"
+      ],
       "source": {
         "line": 14,
         "path": "backend-services/tests/test_security.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security.py::test_header_injection_is_sanitized",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust strips HTML-like tags and control separators from forwarded allowed-header values, applies Python's 8,192-character truncation, excludes sensitive configured headers, and verifies the sanitized value reaches a real local upstream.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::sanitizes_and_bounds_forwarded_header_values_like_python",
+        "gateway-rs/src/routes/rest.rs::sensitive_allowed_request_headers_are_never_forwarded",
+        "gateway-rs/src/routes/rest.rs::executes_selected_upstream_with_filtered_and_credit_headers"
+      ],
       "source": {
         "line": 21,
         "path": "backend-services/tests/test_security.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
@@ -6789,38 +7156,44 @@
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_security_headers_and_hsts",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Checks liveness responses for nosniff, DENY framing, no-referrer, default CSP, absent HSTS in HTTP mode, and HSTS in HTTPS mode.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_security_headers_csp_hsts_and_request_ids_match_python"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_body_size_limit_returns_413",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated child process sets MAX_BODY_SIZE_BYTES=10 and verifies a 100-byte platform authorization body receives HTTP 413.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::configured_platform_body_limit_returns_python_413"
+      ],
       "source": {
         "line": 22,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_strict_response_envelope",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Enables strict mode and asserts HTTP 200 envelope status, nested response payload, token compatibility fields, error wrapping, and the unwrapped health probe exception.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::strict_envelope_preserves_legacy_status_tokens_and_probe_shape"
+      ],
       "source": {
         "line": 32,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
@@ -6837,38 +7210,44 @@
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_cors_strict_allows_localhost",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated child process sets strict wildcard origins with credentials and verifies the localhost origin and credentials headers on liveness.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::strict_wildcard_cors_allows_localhost_like_python"
+      ],
       "source": {
         "line": 65,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_csp_header_default_and_override",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Checks the Python default CSP and an explicit Content-Security-Policy override on liveness responses.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_security_headers_csp_hsts_and_request_ids_match_python"
+      ],
       "source": {
         "line": 78,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_and_metrics.py::test_request_id_header_generation_and_echo",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Checks generated dual request-ID headers and exact echo of a caller-provided X-Request-ID.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_security_headers_csp_hsts_and_request_ids_match_python"
+      ],
       "source": {
         "line": 91,
         "path": "backend-services/tests/test_security_and_metrics.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
@@ -6915,98 +7294,114 @@
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_settings_persistence.py::test_load_settings_from_file_in_memory_mode",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Loads the pinned file fields into memory storage, verifies each effective setting and the persisted settings document, and checks the autosave cadence derived from that document.",
+      "rust_tests": [
+        "gateway-rs/src/storage/security_settings.rs::load_settings_from_file_in_memory_mode_matches_python"
+      ],
       "source": {
         "line": 8,
         "path": "backend-services/tests/test_security_settings_persistence.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_settings_persistence.py::test_save_settings_writes_file_and_autosave_triggers_dump",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "HTTP update writes the configured JSON file and triggers an actual encrypted dump within five seconds despite a 90-second cadence. Asserts returned enablement/cadence, configured dump path, fresh-store file recovery, snapshot settings, and unchanged file after denied or invalid updates.",
+      "rust_tests": [
+        "gateway-rs/tests/security_settings_parity.rs::security_settings_file_persistence_and_immediate_autosave"
+      ],
       "source": {
         "line": 48,
         "path": "backend-services/tests/test_security_settings_persistence.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/security",
       "id": "backend-services/tests/test_security_settings_persistence.py::test_merge_settings_drops_mongo_object_id_before_file_serialization",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Merges a MongoDB ObjectId-shaped record, drops _id and null overrides, writes and reads the JSON file, and verifies security_settings type and exact stored fields.",
+      "rust_tests": [
+        "gateway-rs/src/storage/security_settings.rs::merge_and_file_serialization_drop_mongo_id_and_null_overrides"
+      ],
       "source": {
         "line": 88,
         "path": "backend-services/tests/test_security_settings_persistence.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_self_service_privilege_escalation.py::test_regular_user_cannot_change_own_role",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated user without manage_users receives 403/USR023 when attempting to change its own role.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::self_service_updates_cannot_escalate_privileges"
+      ],
       "source": {
         "line": 14,
         "path": "backend-services/tests/test_self_service_privilege_escalation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_self_service_privilege_escalation.py::test_regular_user_cannot_change_own_groups",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated user without manage_users receives 403/USR023 when attempting to change its own groups.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::self_service_updates_cannot_escalate_privileges"
+      ],
       "source": {
         "line": 68,
         "path": "backend-services/tests/test_self_service_privilege_escalation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_self_service_privilege_escalation.py::test_regular_user_cannot_change_own_active_status",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated user without manage_users receives 403/USR023 when attempting to change its own active state.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::self_service_updates_cannot_escalate_privileges"
+      ],
       "source": {
         "line": 122,
         "path": "backend-services/tests/test_self_service_privilege_escalation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_self_service_privilege_escalation.py::test_regular_user_can_change_own_email",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An authenticated user without manage_users successfully updates its own email through the user route.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::self_service_updates_cannot_escalate_privileges"
+      ],
       "source": {
         "line": 176,
         "path": "backend-services/tests/test_self_service_privilege_escalation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/other",
       "id": "backend-services/tests/test_self_service_privilege_escalation.py::test_admin_can_change_any_user_role",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The administrator updates a separate limited user's role to admin successfully.",
+      "rust_tests": [
+        "gateway-rs/tests/user_lifecycle_parity.rs::self_service_updates_cannot_escalate_privileges"
+      ],
       "source": {
         "line": 227,
         "path": "backend-services/tests/test_self_service_privilege_escalation.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/operations/metrics",
@@ -7023,398 +7418,465 @@
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_incoming_application_xml_sets_text_xml_outgoing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP 1.1 preparation changes application/xml to text/xml; charset=utf-8.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/soap.rs::maps_content_types_and_injects_ws_security"
+      ],
       "source": {
         "line": 96,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_incoming_text_xml_passes_through",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP preparation preserves an incoming text/xml content type.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/soap.rs::preserves_text_xml_and_common_soap_headers"
+      ],
       "source": {
         "line": 116,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_incoming_application_soap_xml_passes_through",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP 1.2 preparation preserves the explicit application/soap+xml content type and action.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/soap.rs::preserves_explicit_soap_twelve_content_type"
+      ],
       "source": {
         "line": 133,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_adds_default_soapaction_when_missing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP 1.1 preparation adds the required empty SOAPAction when no action is supplied.",
+      "rust_tests": [
+        "gateway-rs/src/protocol/soap.rs::maps_content_types_and_injects_ws_security"
+      ],
       "source": {
         "line": 152,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_parses_xml_response_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The authenticated SOAP gateway returns the local upstream's text/xml response and the regression verifies the XML body contains its operation result.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_40_soap_gateway_basic_flow_parity"
+      ],
       "source": {
         "line": 171,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_auto_allows_common_request_headers",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A SOAP-mode local upstream receives normalized text/xml content, Accept, User-Agent, and the generated empty SOAPAction without configured request-header allowlists.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::soap_forwards_common_headers_without_an_allowlist_like_python"
+      ],
       "source": {
         "line": 189,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_content_types.py::test_soap_gateway_does_not_log_response_body",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The Python test monkeypatches its module logger. Rust's SOAP route has no response-body logging call and emits structured tracing only for failures, so there is no logger monkeypatch seam while the sensitive-body exposure path is absent.",
       "rust_tests": [],
       "source": {
         "line": 220,
         "path": "backend-services/tests/test_soap_gateway_content_types.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_retries.py::test_soap_retry_on_500_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP-mode proxying retries a local 500 upstream response once and returns the succeeding XML response.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::soap_retries_transient_upstream_statuses_like_python"
+      ],
       "source": {
         "line": 114,
         "path": "backend-services/tests/test_soap_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_retries.py::test_soap_retry_on_502_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP-mode proxying retries a local 502 upstream response once and returns the succeeding XML response.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::soap_retries_transient_upstream_statuses_like_python"
+      ],
       "source": {
         "line": 131,
         "path": "backend-services/tests/test_soap_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_retries.py::test_soap_retry_on_503_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP-mode proxying retries a local 503 upstream response once and returns the succeeding XML response.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::soap_retries_transient_upstream_statuses_like_python"
+      ],
       "source": {
         "line": 148,
         "path": "backend-services/tests/test_soap_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_retries.py::test_soap_retry_on_504_then_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP-mode proxying retries a local 504 upstream response once and returns the succeeding XML response.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::soap_retries_transient_upstream_statuses_like_python"
+      ],
       "source": {
         "line": 165,
         "path": "backend-services/tests/test_soap_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_gateway_retries.py::test_soap_no_retry_when_retry_count_zero",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "SOAP-mode proxying returns the first 500 response and makes exactly one upstream request when retry_count is zero.",
+      "rust_tests": [
+        "gateway-rs/src/routes/rest.rs::soap_retries_transient_upstream_statuses_like_python"
+      ],
       "source": {
         "line": 182,
         "path": "backend-services/tests/test_soap_gateway_retries.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_validation_no_wsdl.py::test_soap_structural_validation_passes_without_wsdl",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A SOAP envelope converts to the operation fields and passes required, string length, and email validation without a WSDL.",
+      "rust_tests": [
+        "gateway-rs/src/validation/xml.rs::validates_structural_soap_fields_without_a_wsdl_like_python"
+      ],
       "source": {
         "line": 6,
         "path": "backend-services/tests/test_soap_validation_no_wsdl.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/soap",
       "id": "backend-services/tests/test_soap_validation_no_wsdl.py::test_soap_structural_validation_fails_without_wsdl",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A SOAP envelope missing required username converts safely and fails the same structural schema validation.",
+      "rust_tests": [
+        "gateway-rs/src/validation/xml.rs::validates_structural_soap_fields_without_a_wsdl_like_python"
+      ],
       "source": {
         "line": 39,
         "path": "backend-services/tests/test_soap_validation_no_wsdl.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_flows.py::test_subscription_lifecycle",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust creates an API, subscribes the current admin user, reads the subscription list, and unsubscribes through the native platform router.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_21_subscription_list_unsubscribe_parity"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_subscription_flows.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_required_parsing.py::test_subscription_required_rest_path_parsing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust parses the REST API name and path version into the same normalized API lookup key used by subscription policy.",
+      "rust_tests": [
+        "gateway-rs/src/gateway/resolution.rs::resolves_path_version_rest_routes"
+      ],
       "source": {
         "line": 24,
         "path": "backend-services/tests/test_subscription_required_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_required_parsing.py::test_subscription_required_soap_path_parsing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust normalizes SOAP api/version paths into the REST policy path consumed by the shared subscription check.",
+      "rust_tests": [
+        "gateway-rs/src/routes/soap.rs::normalizes_soap_subscription_lookup_path"
+      ],
       "source": {
         "line": 45,
         "path": "backend-services/tests/test_subscription_required_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_required_parsing.py::test_subscription_required_graphql_header_parsing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust normalizes GraphQL API names and X-API-Version values into the shared subscription-policy path.",
+      "rust_tests": [
+        "gateway-rs/src/routes/graphql.rs::normalizes_graphql_subscription_lookup_path"
+      ],
       "source": {
         "line": 66,
         "path": "backend-services/tests/test_subscription_required_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_required_parsing.py::test_subscription_required_grpc_path_parsing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust normalizes gRPC API names and X-API-Version values into the shared subscription-policy path.",
+      "rust_tests": [
+        "gateway-rs/src/routes/grpc.rs::normalizes_grpc_subscription_lookup_path"
+      ],
       "source": {
         "line": 87,
         "path": "backend-services/tests/test_subscription_required_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_required_parsing.py::test_subscription_required_unknown_prefix_fallback",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The Python test invokes subscription_required directly with an /api/other path that the pinned production application does not mount. Rust has explicit protocol routes and no equivalent unknown-prefix policy entry point.",
       "rust_tests": [],
       "source": {
         "line": 108,
         "path": "backend-services/tests/test_subscription_required_parsing.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/platform/subscription",
       "id": "backend-services/tests/test_subscription_routes_extended.py::test_subscriptions_happy_and_invalid_payload",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust covers the successful subscribe/list/unsubscribe path and asserts a missing SubscribeModel field returns Python's 422 VAL001 validation envelope.",
+      "rust_tests": [
+        "gateway-rs/tests/live_tests_parity.rs::live_test_21_subscription_list_unsubscribe_parity",
+        "gateway-rs/tests/platform_native.rs::incomplete_subscription_payload_uses_python_validation_envelope_before_auth"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_subscription_routes_extended.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_chaos_toggles.py::test_tools_chaos_toggle_and_stats",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The privileged tools regression enables the Redis toggle, observes automatic reset in stats, and asserts an invalid backend returns HTTP 400.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::management_permissions_readiness_tools_and_restart_preserve_contract"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_tools_chaos_toggles.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker.py::test_cors_checker_allows_matching_origin",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated CORS configuration matrix mirrors the pinned environment inputs and asserts the matching preflight and actual decisions.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_tools_cors_checker.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker.py::test_cors_checker_denies_disallowed_header",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An isolated CORS configuration matrix asserts a disallowed requested header is reported and blocks preflight.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 30,
         "path": "backend-services/tests/test_tools_cors_checker.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_edge_cases.py::test_tools_cors_checker_allows_when_method_and_headers_match",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts matching origin, method, and requested headers allow preflight.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 9,
         "path": "backend-services/tests/test_tools_cors_checker_edge_cases.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_edge_cases.py::test_tools_cors_checker_denies_when_method_not_allowed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts an unconfigured method returns method_allowed false.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 28,
         "path": "backend-services/tests/test_tools_cors_checker_edge_cases.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_edge_cases.py::test_tools_cors_checker_denies_when_headers_not_allowed",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts an unconfigured requested header blocks preflight.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 41,
         "path": "backend-services/tests/test_tools_cors_checker_edge_cases.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_edge_cases.py::test_tools_cors_checker_credentials_and_wildcard_interaction",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts non-strict wildcard origins allow an arbitrary origin and emit the Python wildcard note.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 55,
         "path": "backend-services/tests/test_tools_cors_checker_edge_cases.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_env_edges.py::test_tools_cors_checker_strict_with_credentials_blocks_wildcard",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts strict wildcard credentials reject an arbitrary origin while preserving the credentials response header.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 5,
         "path": "backend-services/tests/test_tools_cors_checker_env_edges.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_env_edges.py::test_tools_cors_checker_non_strict_wildcard_with_credentials_allows",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The CORS matrix asserts non-strict wildcard credentials echo and allow an arbitrary origin.",
+      "rust_tests": [
+        "gateway-rs/src/routes/platform.rs::tools_cors_checker_matches_pinned_python_matrix"
+      ],
       "source": {
         "line": 30,
         "path": "backend-services/tests/test_tools_cors_checker_env_edges.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_cors_checker_permissions.py::test_tools_cors_checker_requires_manage_security",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The permission matrix rejects a logged-in limited role with TLS001, while the security-manager fixture successfully executes the checker.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::platform_permission_matrix_matches_python_negative_contracts",
+        "gateway-rs/tests/security_settings_parity.rs::live_tools_cors_check_matches_python"
+      ],
       "source": {
         "line": 21,
         "path": "backend-services/tests/test_tools_cors_checker_permissions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_grpc_check.py::test_grpc_check_reports_all_present",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "The privileged tools regression calls the checker and asserts both gRPC capabilities, list-shaped notes, and object-shaped details.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::management_permissions_readiness_tools_and_restart_preserve_contract"
+      ],
       "source": {
         "line": 11,
         "path": "backend-services/tests/test_tools_grpc_check.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/tools",
       "id": "backend-services/tests/test_tools_grpc_check.py::test_grpc_check_reports_missing_protoc",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "",
+      "rationale": "Rust ships protoc through protoc-bin-vendored, so the Python-only grpc_tools.protoc import failure mode cannot occur; the privileged check reports the bundled compiler as available.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::management_permissions_readiness_tools_and_restart_preserve_contract"
+      ],
       "source": {
         "line": 34,
         "path": "backend-services/tests/test_tools_grpc_check.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_changed"
     },
     {
       "domain": "unit/platform/user",
@@ -7447,134 +7909,154 @@
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_audit.py::test_validator_activation_audit_passes",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The _run_audit function is declared inside the Python test module and is not called by the pinned production application, so this is test-local fixture logic rather than a Rust endpoint contract.",
       "rust_tests": [],
       "source": {
         "line": 41,
         "path": "backend-services/tests/test_validation_audit.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_audit.py::test_validator_activation_audit_detects_missing_schema",
-      "notes": "Unreviewed.",
+      "notes": "",
+      "rationale": "The _run_audit function is declared inside the Python test module and is not called by the pinned production application, so this is test-local fixture logic rather than a Rust endpoint contract.",
       "rust_tests": [],
       "source": {
         "line": 74,
         "path": "backend-services/tests/test_validation_audit.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "approved_obsolete"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_nested_object_paths_valid",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust validates a required object and its nested required string field using the pinned nested_schema shape.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 24,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_array_items_valid",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust accepts an array whose items satisfy required string and minimum-length rules.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 44,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_array_items_invalid_type",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust rejects numeric array items when the schema requires strings.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 65,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_required_field_missing",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust rejects a missing dotted required field.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 85,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_enum_restrictions",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust accepts configured enum values and rejects a value outside the configured enum.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 97,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_custom_validator_success",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A registered custom validator accepts the pinned uppercase success value.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 115,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_custom_validator_failure",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "A registered custom validator rejects the pinned mixed-case failure value.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 138,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/gateway/validation",
       "id": "backend-services/tests/test_validation_nested_and_schema_errors.py::test_validation_invalid_field_path_raises_schema_error",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "An invalid empty path segment cannot resolve and causes the required schema rule to fail.",
+      "rust_tests": [
+        "gateway-rs/src/validation/json.rs::matches_python_nested_array_enum_and_schema_validation_cases"
+      ],
       "source": {
         "line": 161,
         "path": "backend-services/tests/test_validation_nested_and_schema_errors.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     },
     {
       "domain": "unit/platform/vault",
       "id": "backend-services/tests/test_vault_routes_permissions.py::test_vault_routes_permissions",
-      "notes": "Unreviewed.",
-      "rust_tests": [],
+      "notes": "Rust logs in a role without extra permissions and asserts vault creation returns one of the same environment-dependent negative statuses accepted by the pinned Python test.",
+      "rust_tests": [
+        "gateway-rs/tests/platform_native.rs::vault_create_without_extra_permissions_matches_python_negative_contract"
+      ],
       "source": {
         "line": 7,
         "path": "backend-services/tests/test_vault_routes_permissions.py",
         "suite": "unit"
       },
-      "status": "missing"
+      "status": "covered"
     }
   ],
   "generation": {
@@ -7619,7 +8101,7 @@
         "covered": 5
       },
       "live/gateway/validation": {
-        "missing": 1
+        "covered": 1
       },
       "live/operations/health": {
         "covered": 2
@@ -7628,8 +8110,9 @@
         "covered": 1
       },
       "live/other": {
-        "covered": 2,
-        "missing": 17
+        "approved_obsolete": 1,
+        "covered": 9,
+        "missing": 9
       },
       "live/platform/api": {
         "covered": 2
@@ -7647,7 +8130,7 @@
         "covered": 2
       },
       "live/platform/memory": {
-        "missing": 2
+        "covered": 2
       },
       "live/platform/rate-limits": {
         "covered": 1
@@ -7656,15 +8139,13 @@
         "covered": 1
       },
       "live/platform/routing": {
-        "covered": 1,
-        "missing": 1
+        "covered": 2
       },
       "live/platform/security": {
         "covered": 4
       },
       "live/platform/subscription": {
-        "covered": 1,
-        "missing": 2
+        "covered": 3
       },
       "live/platform/tier": {
         "covered": 3
@@ -7676,49 +8157,58 @@
         "covered": 5
       },
       "unit/gateway/cache": {
-        "missing": 1
+        "approved_changed": 1
       },
       "unit/gateway/compression": {
-        "missing": 38
+        "approved_obsolete": 16,
+        "covered": 10,
+        "missing": 12
       },
       "unit/gateway/cors": {
         "covered": 6
       },
       "unit/gateway/general": {
-        "covered": 3,
-        "missing": 33
+        "covered": 30,
+        "missing": 6
       },
       "unit/gateway/graphql": {
-        "covered": 3,
-        "missing": 15
+        "approved_obsolete": 3,
+        "covered": 10,
+        "missing": 5
       },
       "unit/gateway/grpc": {
-        "covered": 7,
-        "missing": 22
+        "covered": 16,
+        "missing": 13
       },
       "unit/gateway/ip-policy": {
         "covered": 13
       },
       "unit/gateway/rest": {
-        "missing": 24
+        "approved_obsolete": 6,
+        "covered": 18
       },
       "unit/gateway/soap": {
-        "missing": 14
+        "approved_changed": 1,
+        "covered": 13
       },
       "unit/gateway/validation": {
-        "missing": 17
+        "approved_changed": 7,
+        "approved_obsolete": 2,
+        "covered": 8
       },
       "unit/operations/health": {
         "covered": 2
       },
       "unit/operations/metrics": {
-        "missing": 6
+        "covered": 5,
+        "missing": 1
       },
       "unit/operations/monitor": {
         "covered": 7
       },
       "unit/other": {
-        "missing": 125
+        "covered": 31,
+        "missing": 94
       },
       "unit/platform/api": {
         "covered": 18
@@ -7740,45 +8230,48 @@
         "covered": 2
       },
       "unit/platform/logging": {
-        "missing": 11
+        "covered": 11
       },
       "unit/platform/memory": {
-        "covered": 13,
-        "missing": 11
+        "covered": 22,
+        "missing": 2
       },
       "unit/platform/rate-limits": {
-        "covered": 5,
-        "missing": 29
+        "approved_obsolete": 6,
+        "covered": 15,
+        "missing": 13
       },
       "unit/platform/role": {
         "covered": 1
       },
       "unit/platform/routing": {
-        "covered": 4,
-        "missing": 2
+        "covered": 6
       },
       "unit/platform/security": {
-        "covered": 3,
-        "missing": 19
+        "covered": 17,
+        "missing": 5
       },
       "unit/platform/subscription": {
-        "missing": 7
+        "approved_obsolete": 1,
+        "covered": 6
       },
       "unit/platform/tools": {
-        "missing": 13
+        "approved_changed": 1,
+        "approved_obsolete": 1,
+        "covered": 11
       },
       "unit/platform/user": {
         "covered": 2
       },
       "unit/platform/vault": {
-        "missing": 1
+        "covered": 1
       }
     },
     "status_counts": {
-      "approved_changed": 1,
-      "approved_obsolete": 4,
-      "covered": 184,
-      "missing": 411
+      "approved_changed": 11,
+      "approved_obsolete": 40,
+      "covered": 389,
+      "missing": 160
     },
     "total_test_cases": 600
   }

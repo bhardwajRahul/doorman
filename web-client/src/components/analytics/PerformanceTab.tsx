@@ -63,11 +63,13 @@ export default function PerformanceTab({ overview, timeSeries, endpoints = [] }:
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
 
   // Format helpers
-  const formatMs = (ms: number): string => {
+  const formatMs = (ms: number | undefined | null): string => {
+    if (ms === undefined || ms === null) return '0.0ms'
     return `${ms.toFixed(1)}ms`
   }
 
-  const formatNumber = (num: number): string => {
+  const formatNumber = (num: number | undefined | null): string => {
+    if (num === undefined || num === null) return '0'
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
     if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
     return num.toLocaleString()

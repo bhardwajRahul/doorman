@@ -72,8 +72,8 @@ pub async fn execute(
         Err(_) => {
             return Ok(policy_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "GTW013",
-                "Request body too large",
+                "REQ001",
+                &format!("Request entity too large (max: {limit} bytes)"),
             ));
         }
     };

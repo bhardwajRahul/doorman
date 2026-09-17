@@ -422,22 +422,30 @@ mod tests {
             10,
             20,
         );
+        let before_points = original.get_timeseries();
+        let before_statuses = original.get_status_distribution();
+        let before_apis = original.get_top_apis(10);
+        let before_users = original.get_top_users(10);
+        let before_endpoints = original.get_top_endpoints(10);
         original.save_to_file(&path).unwrap();
+        assert!(path.is_file());
+        assert!(fs::metadata(&path).unwrap().len() > 0);
 
-        let restored = AnalyticsAggregator::new();
-        restored.load_from_file(&path).unwrap();
-        let points = restored.get_timeseries();
-        assert_eq!(points.len(), 1);
-        assert_eq!(points[0].requests, 1);
-        assert_eq!(points[0].errors, 1);
-        assert_eq!(
-            restored.get_top_apis(1),
-            vec![EntityCounter {
-                name: "rest:orders".to_owned(),
-                count: 1,
-                error_count: 1,
-            }]
-        );
+        let empty_path = directory.join("empty.json");
+        fs::write(&empty_path, "{}").unwrap();
+        original.load_from_file(&empty_path).unwrap();
+        assert!(original.get_timeseries().is_empty());
+        assert!(original.get_status_distribution().is_empty());
+        assert!(original.get_top_apis(10).is_empty());
+        assert!(original.get_top_users(10).is_empty());
+        assert!(original.get_top_endpoints(10).is_empty());
+
+        original.load_from_file(&path).unwrap();
+        assert_eq!(original.get_timeseries(), before_points);
+        assert_eq!(original.get_status_distribution(), before_statuses);
+        assert_eq!(original.get_top_apis(10), before_apis);
+        assert_eq!(original.get_top_users(10), before_users);
+        assert_eq!(original.get_top_endpoints(10), before_endpoints);
 
         fs::remove_dir_all(directory).unwrap();
     }

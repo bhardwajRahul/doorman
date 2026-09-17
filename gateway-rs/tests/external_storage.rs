@@ -830,6 +830,45 @@ async fn external_control_plane_collections_persist_mutations_across_reconnect()
     let settings = third.find_one("settings", &filter).await.unwrap().unwrap();
     assert_eq!(settings["revision"], 2);
     assert!(third.find_one("routings", &filter).await.unwrap().is_none());
+
+    // In external mode a local settings file must not override MongoDB, even
+    // on first initialization. Subsequent connections retain database policy.
+    let directory = std::env::temp_dir().join(format!("doorman-external-settings-{nonce}"));
+    std::fs::create_dir(&directory).unwrap();
+    let file = directory.join("security.json");
+    std::fs::write(
+        &file,
+        r#"{"allow_localhost_bypass":true,"trust_x_forwarded_for":true}"#,
+    )
+    .unwrap();
+    let mut settings_config = Config::for_test("unused".to_owned());
+    settings_config.shared_storage = config.clone();
+    settings_config.security_settings_file = Some(file.clone());
+    let initialized = doorman_gateway::storage::security_settings::load(&third, &settings_config)
+        .await
+        .unwrap();
+    assert_eq!(
+        initialized,
+        doorman_gateway::storage::security_settings::merge(&settings_config, None)
+    );
+    assert_eq!(initialized["trust_x_forwarded_for"], false);
+    third
+        .update_one(
+            "settings",
+            &json!({"type": "security_settings"}),
+            &json!({"trust_x_forwarded_for": true, "xff_trusted_proxies": ["10.0.0.1/32"]}),
+        )
+        .await
+        .unwrap();
+    std::fs::write(&file, r#"{"trust_x_forwarded_for":false}"#).unwrap();
+    let fourth = SharedStorage::connect(&config).await.unwrap();
+    let loaded = doorman_gateway::storage::security_settings::load(&fourth, &settings_config)
+        .await
+        .unwrap();
+    assert_eq!(loaded["trust_x_forwarded_for"], true);
+    assert_eq!(loaded["xff_trusted_proxies"], json!(["10.0.0.1/32"]));
+    assert!(loaded.get("_id").is_none());
+    std::fs::remove_dir_all(directory).unwrap();
 }
 #[tokio::test]
 async fn external_concurrent_policy_state_is_atomic_and_invalidates_across_instances() {
@@ -954,6 +993,152 @@ async fn external_concurrent_policy_state_is_atomic_and_invalidates_across_insta
             .unwrap()["api_description"],
         "after"
     );
+}
+
+#[tokio::test]
+async fn external_security_settings_http_preserves_mixed_records_and_bson_id() {
+    if !enabled() {
+        eprintln!("set DOORMAN_EXTERNAL_STORAGE_TEST=1 to run external storage coverage");
+        return;
+    }
+    let mongo_port =
+        std::env::var("DOORMAN_TEST_MONGO_PORT").unwrap_or_else(|_| "27018".to_owned());
+    let redis_port =
+        std::env::var("DOORMAN_TEST_REDIS_PORT").unwrap_or_else(|_| "16379".to_owned());
+    let nonce = Uuid::new_v4().simple().to_string();
+    let mut config = Config::for_test("unused".to_owned());
+    config.shared_storage = SharedStorageConfig {
+        storage_mode: "REDIS".to_owned(),
+        mongo_uri_override: Some(format!("mongodb://127.0.0.1:{mongo_port}/?replicaSet=rs0")),
+        mongo_database: format!("doorman_external_settings_{nonce}"),
+        redis_host: "127.0.0.1".to_owned(),
+        redis_port: redis_port.parse().unwrap(),
+        redis_password: None,
+        ..Default::default()
+    };
+    let storage = SharedStorage::connect(&config.shared_storage)
+        .await
+        .unwrap();
+    let unrelated = storage
+        .insert_one(
+            "settings",
+            json!({"type":"email_settings",
+        "mail_secret":"test-only-sentinel", "auto_save_frequency_seconds":999}),
+        )
+        .await
+        .unwrap();
+    let mongo = mongodb::Client::with_uri_str(config.shared_storage.mongo_uri())
+        .await
+        .unwrap();
+    let collection = mongo
+        .database(&config.shared_storage.mongo_database)
+        .collection::<mongodb::bson::Document>("settings");
+    let security_id = mongodb::bson::oid::ObjectId::new();
+    collection
+        .insert_one(
+            mongodb::bson::doc! {"_id":security_id, "type":"security_settings",
+            "auto_save_frequency_seconds":120, "enable_auto_save":false},
+        )
+        .await
+        .unwrap();
+    let password = format!("Settings1!{nonce}");
+    storage
+        .insert_one(
+            "roles",
+            json!({"role_name":"settings-manager", "manage_security":true}),
+        )
+        .await
+        .unwrap();
+    storage.insert_one("users", json!({"username":"settings-manager", "email":"settings@example.test",
+        "password":bcrypt::hash(&password, bcrypt::DEFAULT_COST).unwrap(), "role":"settings-manager",
+        "active":true, "ui_access":true, "groups":[]})).await.unwrap();
+    let mut state = AppState::new(config.clone()).unwrap();
+    state.storage = Some(Arc::new(storage.clone()));
+    let app = build_router(state);
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/platform/authorization")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"email":"settings@example.test", "password":password}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let login: serde_json::Value =
+        serde_json::from_slice(&to_bytes(login.into_body(), 16384).await.unwrap()).unwrap();
+    let token = login.get("response").unwrap_or(&login)["access_token"]
+        .as_str()
+        .unwrap();
+    for (method, payload, expected) in [
+        (Method::GET, None, 120),
+        (
+            Method::PUT,
+            Some(json!({"auto_save_frequency_seconds":180})),
+            180,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/platform/security/settings")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(
+                        payload
+                            .map(|value| Body::from(value.to_string()))
+                            .unwrap_or_else(Body::empty),
+                    )
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 16384).await.unwrap()).unwrap();
+        let settings = response.get("response").unwrap_or(&response);
+        assert_eq!(settings["type"], "security_settings");
+        assert_eq!(settings["auto_save_frequency_seconds"], expected);
+        assert!(settings.get("mail_secret").is_none());
+        assert!(settings.get("_id").is_none());
+    }
+    let reconnected = SharedStorage::connect(&config.shared_storage)
+        .await
+        .unwrap();
+    assert_eq!(
+        reconnected
+            .find_many("settings", &json!({}))
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        reconnected
+            .find_one("settings", &json!({"type":"email_settings"}))
+            .await
+            .unwrap()
+            .unwrap(),
+        unrelated
+    );
+    let saved = collection
+        .find_one(mongodb::bson::doc! {"type":"security_settings"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.get_object_id("_id").unwrap(), security_id);
+    assert_eq!(saved.get_i64("auto_save_frequency_seconds").unwrap(), 180);
+    let loaded = doorman_gateway::storage::security_settings::load(&reconnected, &config)
+        .await
+        .unwrap();
+    assert_eq!(loaded["auto_save_frequency_seconds"], 180);
 }
 #[tokio::test]
 async fn external_storage_unavailable_dependencies_fail_closed() {

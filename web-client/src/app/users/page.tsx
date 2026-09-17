@@ -1,4 +1,6 @@
 'use client'
+import { TableSkeleton } from '@/components/TableSkeleton'
+import toast from 'react-hot-toast'
 
 import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
@@ -22,9 +24,9 @@ const UsersPage = () => {
   const [users, setUsers] = useState<User[]>([])
   const [allUsers, setAllUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [sortBy, setSortBy] = useState('username')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [hasNext, setHasNext] = useState(false)
@@ -36,7 +38,6 @@ const UsersPage = () => {
   const fetchUsers = async () => {
     try {
       setLoading(true)
-      setError(null)
       const { fetchJson } = await import('@/utils/http')
       const data: any = await fetchJson(`${SERVER_URL}/platform/user/all?page=${page}&page_size=${pageSize}`)
       const userList = Array.isArray(data) ? data : (data.users || data.response?.users || [])
@@ -45,7 +46,8 @@ const UsersPage = () => {
       const hn = (data?.has_next ?? data?.response?.has_next)
       setHasNext(typeof hn === 'boolean' ? hn : (userList || []).length === pageSize)
     } catch (err) {
-      setError('Failed to load users. Please try again later.')
+
+      toast.error('Failed to load users. Please try again later.')
       setUsers([])
       setAllUsers([])
       setHasNext(false)
@@ -70,16 +72,20 @@ const UsersPage = () => {
   }
 
   const handleSort = (sortField: string) => {
+    const isSameField = sortField === sortBy
+    const newOrder = isSameField ? (sortOrder === 'asc' ? 'desc' : 'asc') : 'asc'
     setSortBy(sortField)
+    setSortOrder(newOrder)
     const sortedUsers = [...users].sort((a, b) => {
+      let comparison = 0
       if (sortField === 'username') {
-        return a.username.localeCompare(b.username)
+        comparison = a.username.localeCompare(b.username)
       } else if (sortField === 'email') {
-        return a.email.localeCompare(b.email)
+        comparison = a.email.localeCompare(b.email)
       } else if (sortField === 'status') {
-        return a.active === b.active ? 0 : a.active ? -1 : 1
+        comparison = a.active === b.active ? 0 : a.active ? -1 : 1
       }
-      return 0
+      return newOrder === 'asc' ? comparison : -comparison
     })
     setUsers(sortedUsers)
   }
@@ -133,51 +139,13 @@ const UsersPage = () => {
               </div>
             </form>
 
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleSort('username')}
-                className={`btn ${sortBy === 'username' ? 'btn-primary' : 'btn-secondary'}`}
-              >
-                Username
-              </button>
-              <button
-                onClick={() => handleSort('email')}
-                className={`btn ${sortBy === 'email' ? 'btn-primary' : 'btn-secondary'}`}
-              >
-                Email
-              </button>
-              <button
-                onClick={() => handleSort('status')}
-                className={`btn ${sortBy === 'status' ? 'btn-primary' : 'btn-secondary'}`}
-              >
-                Status
-              </button>
-            </div>
+
           </div>
         </div>
 
-        {error && (
-          <div className="rounded-lg bg-error-50 border border-error-200 p-4 dark:bg-error-900/20 dark:border-error-800">
-            <div className="flex">
-              <svg className="h-5 w-5 text-error-400 dark:text-error-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <div className="ml-3">
-                <p className="text-sm text-error-700 dark:text-error-300">{error}</p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {loading ? (
-          <div className="card">
-            <div className="flex items-center justify-center py-12">
-              <div className="text-center">
-                <div className="spinner mx-auto mb-4"></div>
-                <p className="text-gray-600 dark:text-gray-400">Loading users...</p>
-              </div>
-            </div>
-          </div>
+          <TableSkeleton />
         ) : (
           /* Users Table */
           <div className="card">
@@ -185,10 +153,16 @@ const UsersPage = () => {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Username</th>
-                    <th>Email</th>
+                    <th onClick={() => handleSort('username')} className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                      <div className="flex items-center gap-1">Username {sortBy === 'username' && (sortOrder === 'asc' ? '↑' : '↓')}</div>
+                    </th>
+                    <th onClick={() => handleSort('email')} className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                      <div className="flex items-center gap-1">Email {sortBy === 'email' && (sortOrder === 'asc' ? '↑' : '↓')}</div>
+                    </th>
                     <th>Roles</th>
-                    <th>Status</th>
+                    <th onClick={() => handleSort('status')} className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                      <div className="flex items-center gap-1">Status {sortBy === 'status' && (sortOrder === 'asc' ? '↑' : '↓')}</div>
+                    </th>
                     <th>Last Login</th>
                     <th></th>
                   </tr>
@@ -269,12 +243,19 @@ const UsersPage = () => {
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
                   {searchTerm ? 'Try adjusting your search terms.' : 'Get started by creating your first user account.'}
                 </p>
-                <Link href="/users/add" className="btn btn-primary">
-                  <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                  Add User
-                </Link>
+                <div className="flex items-center justify-center gap-4">
+                  {searchTerm && (
+                    <button onClick={() => { setSearchTerm(''); setUsers(allUsers) }} className="btn btn-secondary">
+                      Clear Search
+                    </button>
+                  )}
+                  <Link href="/users/add" className="btn btn-primary">
+                    <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add User
+                  </Link>
+                </div>
               </div>
             )}
           </div>

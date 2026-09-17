@@ -18,35 +18,11 @@ export default function Layout({ children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const pathname = usePathname()
   const router = useRouter()
-  const { isAuthenticated, authResolved, hasUIAccess, user, permissions, logout } = useAuth()
-  
-  useEffect(() => { 
-    if (pathname === '/login' || pathname === '/403') return 
-    if (!authResolved) return
-    if (!isAuthenticated) { 
-      if (DEBUG) console.log('Layout - Redirecting to login:', { pathname }) 
-      router.push('/login') 
-      return 
-    }; 
-    if (!hasUIAccess) { 
-      if (DEBUG) console.log('Layout - Redirecting to 403 (no UI access):', { pathname }) 
-      router.push('/403') 
-    } 
-  }, [pathname, isAuthenticated, authResolved, hasUIAccess, router, DEBUG])
-  
+  const { isAuthenticated, hasUIAccess, user, permissions, logout } = useAuth()
+  useEffect(() => { if (pathname === '/login' || pathname === '/403') return; if (!isAuthenticated) { if (DEBUG) console.log('Layout - Redirecting to login:', { pathname }); router.push('/login'); return }; if (!hasUIAccess) { if (DEBUG) console.log('Layout - Redirecting to 403 (no UI access):', { pathname }); router.push('/403') } }, [pathname, isAuthenticated, hasUIAccess, router, DEBUG])
   useEffect(() => { document.documentElement.classList.remove('dark') }, [])
-  
   const filteredMenuItems = menuItems.filter(item => !item.permission || permissions?.[item.permission])
   const isActive = (href: string) => pathname === href || (href !== '/dashboard' && pathname.startsWith(`${href}/`))
-  
-  if (!authResolved && pathname !== '/login' && pathname !== '/403') {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-      </div>
-    )
-  }
-
   return <AppShell>
     <header className="signal-header">
       <Link href="/dashboard" className="signal-brand" aria-label="Doorman dashboard"><span className="signal-brand-mark" aria-hidden="true"><img src="/doorman-mark.svg" alt="" /></span><span><span className="signal-brand-name">Doorman</span><span className="signal-brand-subtitle">API + AI Gateway</span></span></Link>

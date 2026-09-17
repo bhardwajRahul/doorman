@@ -81,7 +81,7 @@ impl MemoryAutosaveConfig {
         if let Some(frequency_seconds) = settings
             .get("auto_save_frequency_seconds")
             .and_then(Value::as_u64)
-            .filter(|value| *value >= 60)
+            .filter(|value| *value > 0)
         {
             config.frequency_seconds = frequency_seconds;
         }
@@ -102,14 +102,21 @@ impl Default for MemoryAutosaveConfig {
             .ok()
             .is_some_and(|value| {
                 matches!(
-                    value.to_ascii_lowercase().as_str(),
+                    crate::python_scalar::strip(&value)
+                        .to_ascii_lowercase()
+                        .as_str(),
                     "1" | "true" | "yes" | "on"
                 )
             });
         let frequency_seconds = std::env::var("MEM_AUTO_SAVE_FREQ")
             .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value >= 60)
+            .and_then(|value| {
+                crate::python_scalar::parse_integer(crate::python_scalar::strip(&value))
+            })
+            .and_then(|value| u64::try_from(value).ok())
+            // Python preserves positive environment intervals; the worker
+            // applies the 60-second scheduling minimum independently.
+            .filter(|value| *value > 0)
             .unwrap_or(900);
         let dump_path = std::env::var("MEM_DUMP_PATH")
             .ok()

@@ -43,6 +43,8 @@ localStorage.setItem('API_URL', 'https://api.doorman.example.com')
 | `MEM_OR_EXTERNAL` | `MEM` | `MEM` (in-memory) or `REDIS` (production) |
 | `MEM_ENCRYPTION_KEY` | - | 32+ char secret for memory dumps (required for dumps) |
 | `MEM_DUMP_PATH` | `generated/memory_dump.bin` | Memory dump file path. Relative paths are resolved from the service working directory; the container default maps to the `/app/data` volume. |
+| `SECURITY_SETTINGS_FILE` | `generated/security_settings.json` | Best-effort JSON mirror of security settings. Memory-mode startup loads it only when no settings document exists; external mode always uses MongoDB. Compose defaults to `/app/data/security_settings.json` on its persistent volume. |
+| `PYTHONINTMAXSTRDIGITS` | `4300` | Digit limit for security-settings interval strings and autosave environment integers. Use `0` for unlimited digits or a value from `640` to `2147483647`. Captured at startup; invalid values prevent startup. |
 | `REDIS_HOST` | `localhost` | Redis hostname |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_DB` | `0` | Redis database number |
@@ -70,10 +72,15 @@ localStorage.setItem('API_URL', 'https://api.doorman.example.com')
 | `LOCAL_HOST_IP_BYPASS` | `false` | Localhost bypasses IP filters. **Disable in production** |
 
 **Platform IP Settings** (configured via UI/API):
+
 - `ip_whitelist` - Allowed IPs/CIDRs
 - `ip_blacklist` - Denied IPs/CIDRs  
 - `trust_x_forwarded_for` - Trust proxy headers
-- `xff_trusted_proxies` - Trusted proxy IPs (required when trust=true)
+- `xff_trusted_proxies` - Trusted proxy IPs/CIDRs. An empty list trusts any direct peer when forwarding-header trust is enabled.
+
+IP lists preserve supplied strings and convert JSON scalar items to strings. A null field leaves its list unchanged; an empty list clears it. Invalid IP patterns never match a client or proxy, so a nonempty whitelist with no matching valid entry denies access.
+
+Policy matching trims surrounding whitespace. IPv4 networks accept prefix lengths, dotted netmasks such as `203.0.113.0/255.255.255.0`, and hostmasks such as `203.0.113.0/0.0.0.255`. IPv6 networks accept numeric prefix lengths. Numeric prefixes use unsigned ASCII digits.
 
 ## Request Limits
 

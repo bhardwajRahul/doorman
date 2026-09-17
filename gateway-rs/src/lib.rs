@@ -8,6 +8,7 @@ pub mod observability;
 pub mod platform_contract;
 pub mod policy;
 pub mod protocol;
+mod python_scalar;
 pub mod routes;
 pub mod state;
 pub mod storage;

@@ -15,6 +15,7 @@ pub struct Config {
     pub compression_minimum_size: u16,
     pub strict_response_envelope: bool,
     pub logs_dir: Option<PathBuf>,
+    pub security_settings_file: Option<PathBuf>,
     pub shared_storage: SharedStorageConfig,
 }
 
@@ -177,11 +178,13 @@ impl Default for SharedStorageConfig {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
+        crate::python_scalar::integer_digit_limit()
+            .map_err(|message| ConfigError::InvalidConfiguration(message.to_owned()))?;
         let shared_storage = SharedStorageConfig::from_env()?;
         shared_storage.validate_required()?;
         validate_runtime_environment(&shared_storage)?;
 
-        let configured_compression_level = env_parse("COMPRESSION_LEVEL", 1_i32)?;
+        let configured_compression_level = env_parse("COMPRESSION_LEVEL", 6_i32)?;
         let compression_level = if (1..=9).contains(&configured_compression_level) {
             configured_compression_level
         } else {
@@ -213,6 +216,11 @@ impl Config {
                 path.exists().then_some(path)
             }),
             shared_storage,
+            security_settings_file: Some(
+                env::var("SECURITY_SETTINGS_FILE")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| PathBuf::from("generated/security_settings.json")),
+            ),
         })
     }
 
@@ -234,10 +242,12 @@ impl Config {
             https_only: false,
             content_security_policy: None,
             compression_enabled: true,
-            compression_level: 1,
+            compression_level: 6,
             compression_minimum_size: 500,
             strict_response_envelope: false,
             logs_dir: None,
+            // Tests opt into an isolated path when exercising file persistence.
+            security_settings_file: None,
             shared_storage: SharedStorageConfig::default(),
         }
     }
@@ -486,6 +496,14 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compression_defaults_match_python() {
+        let config = Config::for_test("http://127.0.0.1:9".to_owned());
+        assert!(config.compression_enabled);
+        assert_eq!(config.compression_level, 6);
+        assert_eq!(config.compression_minimum_size, 500);
+    }
 
     #[test]
     fn builds_python_compatible_storage_urls() {
