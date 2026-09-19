@@ -71,6 +71,40 @@ pub struct WindowCounter {
     inner: Arc<Mutex<HashMap<String, CounterEntry>>>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TokenBucketCounter {
+    inner: Arc<Mutex<HashMap<String, TokenBucketEntry>>>,
+}
+
+#[derive(Clone, Debug)]
+struct TokenBucketEntry {
+    tokens: f64,
+    last_millis: u64,
+}
+
+impl TokenBucketCounter {
+    /// Consume one token, refilling continuously over `window_millis`.
+    pub fn take(&self, key: &str, capacity: u64, window_millis: u64, now_millis: u64) -> bool {
+        if capacity == 0 || window_millis == 0 {
+            return false;
+        }
+        let mut inner = self.inner.lock().expect("token bucket mutex poisoned");
+        let entry = inner.entry(key.to_owned()).or_insert(TokenBucketEntry {
+            tokens: capacity as f64,
+            last_millis: now_millis,
+        });
+        let elapsed = now_millis.saturating_sub(entry.last_millis);
+        let refill = elapsed as f64 * capacity as f64 / window_millis as f64;
+        entry.tokens = (entry.tokens + refill).min(capacity as f64);
+        entry.last_millis = now_millis;
+        if entry.tokens < 1.0 {
+            return false;
+        }
+        entry.tokens -= 1.0;
+        true
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CounterEntry {
     count: u64,
@@ -132,5 +166,14 @@ mod tests {
         assert_eq!(counter.incr("k1", 1, 0), 3);
         assert_eq!(counter.incr("k1", 1, 2), 1);
         assert_eq!(counter.incr("k1", 1, 2), 2);
+    }
+
+    #[test]
+    fn token_bucket_allows_burst_then_refills() {
+        let bucket = TokenBucketCounter::default();
+        assert!(bucket.take("alice", 2, 1_000, 0));
+        assert!(bucket.take("alice", 2, 1_000, 0));
+        assert!(!bucket.take("alice", 2, 1_000, 0));
+        assert!(bucket.take("alice", 2, 1_000, 500));
     }
 }

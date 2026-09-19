@@ -11,7 +11,7 @@ use doorman_gateway::{
     observability::analytics_aggregator::global_analytics,
     routes::platform::backfill_grpc_descriptors,
     state::{GatewayRuntime, MemoryAutosaveConfig},
-    storage::{runtime::SharedStorage, snapshot},
+    storage::{runtime::SharedStorage, security_settings, snapshot},
 };
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -25,6 +25,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = config.bind_addr();
     let state = AppState::from_config(config).await?;
     let storage = state.storage.clone();
+    let runtime = state.runtime.clone();
+    let mut autosave_task = None;
+    let mut signal_dump_task = None;
     spawn_metrics_autosave(state.runtime.clone());
 
     if let Some(storage) = storage.as_ref().filter(|storage| !storage.is_memory()) {
@@ -48,7 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(storage) = storage.as_ref().filter(|storage| storage.is_memory()) {
-        match snapshot::restore_latest(storage, None).await {
+        let dump_path = security_settings::startup_dump_path(&state.config);
+        match snapshot::restore_latest(storage, dump_path.as_deref()).await {
             Ok((version, created_at)) => info!(version, created_at, "restored memory snapshot"),
             Err(snapshot::SnapshotError::Io(error_value))
                 if error_value.kind() == std::io::ErrorKind::NotFound =>
@@ -63,20 +67,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(error_value.into());
             }
         }
-        match storage.find_one("settings", &serde_json::json!({})).await {
-            Ok(settings) => {
-                state
-                    .runtime
-                    .update_memory_autosave_config(MemoryAutosaveConfig::from_settings(
-                        settings.as_ref(),
-                    ))
-            }
-            Err(error_value) => {
-                warn!(error = %error_value, "could not load persisted memory autosave settings; using environment defaults")
-            }
+    }
+
+    // Settings restored from a dump or MongoDB take precedence over the file.
+    // Load before the listener and the first autosave so policy and persistence
+    // use the same settings on the first request.
+    if let Some(storage) = &storage {
+        let settings = security_settings::load(storage, &state.config).await?;
+        state
+            .runtime
+            .update_memory_autosave_config(MemoryAutosaveConfig::from_settings(Some(&settings)));
+        if storage.is_memory() {
+            autosave_task = Some(snapshot::spawn_autosave(storage.clone(), runtime.clone()));
+            signal_dump_task = spawn_sigusr1_dump(storage.clone(), runtime.clone());
         }
-        spawn_memory_autosave(storage.clone(), state.runtime.clone());
-        spawn_sigusr1_dump(storage.clone());
     }
 
     // Memory snapshots are restored above, so the first purge sees the same
@@ -95,8 +99,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(storage))
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
+
+    // Axum has now drained active requests. Stop writers before the final dump
+    // so an older autosave cannot replace the state committed during draining.
+    for task in [autosave_task, signal_dump_task].into_iter().flatten() {
+        task.abort();
+        let _ = task.await;
+    }
+    if let Some(storage) = storage.filter(|storage| storage.is_memory()) {
+        let dump_path = runtime.memory_autosave_config().borrow().dump_path.clone();
+        match snapshot::dump(&storage, dump_path.as_deref()).await {
+            Ok(path) => {
+                runtime
+                    .memory_snapshot_healthy
+                    .store(true, Ordering::Relaxed);
+                info!(path = %path.display(), "shutdown memory dump completed");
+            }
+            Err(snapshot::SnapshotError::MissingKey) => {}
+            Err(error_value) => {
+                runtime
+                    .memory_snapshot_healthy
+                    .store(false, Ordering::Relaxed);
+                error!(error = %error_value, "shutdown memory dump failed");
+            }
+        }
+    }
+    persist_metrics();
     Ok(())
 }
 
@@ -164,76 +194,51 @@ fn spawn_revocation_purger(storage: Arc<SharedStorage>, runtime: Arc<GatewayRunt
     });
 }
 
-fn spawn_memory_autosave(storage: Arc<SharedStorage>, runtime: Arc<GatewayRuntime>) {
-    let mut updates = runtime.memory_autosave_config();
-    tokio::spawn(async move {
-        loop {
-            let config = updates.borrow_and_update().clone();
-            if !config.enabled {
-                if updates.changed().await.is_err() {
-                    break;
-                }
-                continue;
+#[cfg(unix)]
+fn spawn_sigusr1_dump(
+    storage: Arc<SharedStorage>,
+    runtime: Arc<GatewayRuntime>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    // Register before opening the listener, so the first accepted request can
+    // safely be followed by an on-demand signal.
+    let mut signal =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) {
+            Ok(signal) => signal,
+            Err(error_value) => {
+                warn!(error = %error_value, "failed to register SIGUSR1 memory dump handler");
+                return None;
             }
-            if env::var("MEM_ENCRYPTION_KEY").is_err() {
-                runtime
-                    .memory_snapshot_healthy
-                    .store(false, Ordering::Relaxed);
-                error!("memory autosave enabled without MEM_ENCRYPTION_KEY");
-                if updates.changed().await.is_err() {
-                    break;
-                }
-                continue;
-            }
-            tokio::select! {
-                changed = updates.changed() => {
-                    if changed.is_err() {
-                        break;
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_secs(config.frequency_seconds.max(60))) => match snapshot::dump(&storage, config.dump_path.as_deref()).await {
+        };
+    Some(tokio::spawn(async move {
+        while signal.recv().await.is_some() {
+            let dump_path = runtime.memory_autosave_config().borrow().dump_path.clone();
+            match snapshot::dump(&storage, dump_path.as_deref()).await {
                 Ok(path) => {
                     runtime
                         .memory_snapshot_healthy
                         .store(true, Ordering::Relaxed);
-                    info!(path = %path.display(), "memory autosave completed");
+                    info!(path = %path.display(), "SIGUSR1 memory dump completed");
                 }
                 Err(error_value) => {
                     runtime
                         .memory_snapshot_healthy
                         .store(false, Ordering::Relaxed);
-                    error!(error = %error_value, "memory autosave failed");
-                }
+                    error!(error = %error_value, "SIGUSR1 memory dump failed");
                 }
             }
         }
-    });
-}
-
-#[cfg(unix)]
-fn spawn_sigusr1_dump(storage: Arc<SharedStorage>) {
-    tokio::spawn(async move {
-        let mut signal =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) {
-                Ok(signal) => signal,
-                Err(error_value) => {
-                    warn!(error = %error_value, "failed to register SIGUSR1 memory dump handler");
-                    return;
-                }
-            };
-        while signal.recv().await.is_some() {
-            match snapshot::dump(&storage, None).await {
-                Ok(path) => info!(path = %path.display(), "SIGUSR1 memory dump completed"),
-                Err(error_value) => error!(error = %error_value, "SIGUSR1 memory dump failed"),
-            }
-        }
-    });
+    }))
 }
 
 #[cfg(not(unix))]
-fn spawn_sigusr1_dump(_storage: Arc<SharedStorage>) {}
+fn spawn_sigusr1_dump(
+    _storage: Arc<SharedStorage>,
+    _runtime: Arc<GatewayRuntime>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    None
+}
 
-async fn shutdown_signal(storage: Option<Arc<SharedStorage>>) {
+async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -256,14 +261,7 @@ async fn shutdown_signal(storage: Option<Arc<SharedStorage>>) {
         () = terminate => {},
     }
 
-    if let Some(storage) = storage.filter(|storage| storage.is_memory()) {
-        match snapshot::dump(&storage, None).await {
-            Ok(path) => info!(path = %path.display(), "shutdown memory dump completed"),
-            Err(snapshot::SnapshotError::MissingKey) => {}
-            Err(error_value) => error!(error = %error_value, "shutdown memory dump failed"),
-        }
-    }
-    persist_metrics();
+    info!("shutdown requested; draining active requests");
 }
 
 fn metrics_paths() -> [PathBuf; 2] {

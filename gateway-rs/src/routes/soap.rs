@@ -29,7 +29,21 @@ pub async fn soap_policy_then_execute(
         .to_owned();
     request
         .extensions_mut()
-        .insert(PolicyPath(format!("/api/rest/{suffix}")));
+        .insert(PolicyPath(soap_policy_path(&suffix)));
     request.extensions_mut().insert(DataPlaneProtocol::Soap);
     rest_policy_then_proxy(State(state), request).await
+}
+
+fn soap_policy_path(suffix: &str) -> String {
+    format!("/api/rest/{suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_soap_subscription_lookup_path() {
+        assert_eq!(soap_policy_path("svc2/v2/do"), "/api/rest/svc2/v2/do");
+    }
 }

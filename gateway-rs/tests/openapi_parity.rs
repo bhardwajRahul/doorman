@@ -111,3 +111,41 @@ async fn openapi_matches_the_pinned_python_surface() {
     );
     assert_eq!(parameters, 216);
 }
+#[tokio::test]
+async fn pinned_openapi_operation_ids_are_stable_and_lowercase() {
+    let app = platform_app().await;
+    let token = login(&app).await;
+    let mut contracts = Vec::new();
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/platform/openapi.json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        contracts.push(serde_json::from_slice::<Value>(&body).unwrap());
+    }
+    assert_eq!(contracts[0], contracts[1]);
+    for (path, method) in [
+        ("/platform/authorization", "post"),
+        ("/platform/monitor/liveness", "get"),
+        ("/api/status", "get"),
+    ] {
+        let id = contracts[0]["paths"][path][method]["operationId"]
+            .as_str()
+            .unwrap();
+        assert!(!id.is_empty());
+        assert_eq!(id, id.to_ascii_lowercase());
+        assert!(
+            id.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        );
+    }
+}

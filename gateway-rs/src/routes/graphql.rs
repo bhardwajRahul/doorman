@@ -47,9 +47,26 @@ pub async fn graphql_policy_then_execute(
         .trim_start_matches("/api/graphql/")
         .trim_matches('/')
         .to_owned();
-    request.extensions_mut().insert(PolicyPath(format!(
-        "/api/rest/{api_name}/{version}/graphql"
-    )));
+    request
+        .extensions_mut()
+        .insert(PolicyPath(graphql_policy_path(&api_name, &version)));
     request.extensions_mut().insert(DataPlaneProtocol::Graphql);
     rest_policy_then_proxy(State(state), request).await
+}
+
+fn graphql_policy_path(api_name: &str, version: &str) -> String {
+    format!("/api/rest/{api_name}/{version}/graphql")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_graphql_subscription_lookup_path() {
+        assert_eq!(
+            graphql_policy_path("svc3", "v3"),
+            "/api/rest/svc3/v3/graphql"
+        );
+    }
 }

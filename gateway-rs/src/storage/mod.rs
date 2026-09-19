@@ -5,5 +5,6 @@ pub mod models;
 pub mod mongo;
 pub mod redis;
 pub mod runtime;
+pub mod security_settings;
 pub mod snapshot;
 pub mod vault;

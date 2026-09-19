@@ -159,7 +159,7 @@ const APIsPage = () => {
   return (
     <Layout>
       <div className="space-y-6">
-        <SignalPageHeader kicker="Traffic policy" title={<>API<br className="sm:hidden" /> Gateway.</>} description="Configure, search, and monitor every gateway API without changing its live routing contract." actions={<SignalPrimaryLink href="/apis/add">Add API</SignalPrimaryLink>} />
+        <SignalPageHeader kicker="Traffic policy" title={<>API<br className="sm:hidden" /> Gateway.</>} description="Configure, search, and monitor every gateway API without changing its live routing contract." actions={<div className="flex gap-2"><SignalPrimaryLink href="/apis/import-swagger" className="!bg-gray-200 !text-gray-900 border-2 border-gray-900">Import Swagger</SignalPrimaryLink><SignalPrimaryLink href="/apis/add">Add API</SignalPrimaryLink></div>} />
 
         <SignalPanel tone="white" title="Search and ordering" kicker="Route registry">
           <div className="flex flex-col sm:flex-row gap-4">

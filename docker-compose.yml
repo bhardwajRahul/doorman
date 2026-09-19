@@ -29,8 +29,10 @@ services:
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_DB: ${REDIS_DB:-0}
       MEM_DUMP_PATH: ${MEM_DUMP_PATH:-/app/data/memory_dump.bin}
+      SECURITY_SETTINGS_FILE: ${SECURITY_SETTINGS_FILE:-/app/data/security_settings.json}
       MEM_AUTO_SAVE_ENABLED: ${MEM_AUTO_SAVE_ENABLED:-true}
       MEM_AUTO_SAVE_FREQ: ${MEM_AUTO_SAVE_FREQ:-300}
+      PYTHONINTMAXSTRDIGITS: ${PYTHONINTMAXSTRDIGITS:-4300}
       MEM_ENCRYPTION_KEY: ${MEM_ENCRYPTION_KEY:-}
       LOGS_DIR: /app/logs
     volumes:

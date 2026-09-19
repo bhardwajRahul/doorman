@@ -275,4 +275,91 @@ mod tests {
             validate_json_with_registry(&json!({"code": "anything"}), &unknown, &registry).is_ok()
         );
     }
+
+    #[test]
+    fn matches_python_nested_array_enum_and_schema_validation_cases() {
+        let nested = json!({
+            "validation_schema": {
+                "user": {
+                    "required": true,
+                    "type": "object",
+                    "nested_schema": {
+                        "name": {"required": true, "type": "string", "min": 2}
+                    }
+                }
+            }
+        });
+        assert!(validate_json(&json!({"user": {"name": "John"}}), &nested).is_ok());
+
+        let edge_cases = json!({"validation_schema": {
+            "user.email": {"required": true, "type": "string", "format": "email"},
+            "items": {
+                "required": true,
+                "type": "array",
+                "min": 1,
+                "array_items": {
+                    "type": "object",
+                    "nested_schema": {
+                        "id": {"required": true, "type": "string", "format": "uuid"},
+                        "quantity": {"required": true, "type": "number", "min": 1}
+                    }
+                }
+            }
+        }});
+        assert!(validate_json(
+            &json!({"user": {"email": "not-an-email"}, "items": [{"id": "123", "quantity": 0}]}),
+            &edge_cases
+        )
+        .is_err());
+        assert!(validate_json(
+            &json!({"user": {"email": "u@example.com"}, "items": [{"id": "550e8400-e29b-41d4-a716-446655440000", "quantity": 2}]}),
+            &edge_cases
+        )
+        .is_ok());
+
+        let array = json!({"validation_schema": {"tags": {
+            "required": true,
+            "type": "array",
+            "min": 1,
+            "array_items": {"required": true, "type": "string", "min": 2}
+        }}});
+        assert!(validate_json(&json!({"tags": ["ab", "cd"]}), &array).is_ok());
+        assert!(validate_json(&json!({"tags": [1, 2]}), &array).is_err());
+
+        let required = json!({"validation_schema": {"profile.age": {
+            "required": true,
+            "type": "number"
+        }}});
+        assert!(validate_json(&json!({"profile": {}}), &required).is_err());
+
+        let enum_schema = json!({"validation_schema": {"status": {
+            "required": true,
+            "type": "string",
+            "enum": ["NEW", "OPEN"]
+        }}});
+        assert!(validate_json(&json!({"status": "OPEN"}), &enum_schema).is_ok());
+        assert!(validate_json(&json!({"status": "CLOSED"}), &enum_schema).is_err());
+
+        let custom = json!({"validation_schema": {"code": {
+            "required": true,
+            "type": "string",
+            "custom_validator": "uppercase"
+        }}});
+        let mut registry = ValidatorRegistry::default();
+        registry.register("uppercase", |value, _rules| {
+            value
+                .as_str()
+                .is_some_and(|value| value == value.to_uppercase())
+                .then_some(())
+                .ok_or_else(|| "Not upper".to_owned())
+        });
+        assert!(validate_json_with_registry(&json!({"code": "ABC"}), &custom, &registry).is_ok());
+        assert!(validate_json_with_registry(&json!({"code": "Abc"}), &custom, &registry).is_err());
+
+        let invalid_path = json!({"validation_schema": {"user..name": {
+            "required": true,
+            "type": "string"
+        }}});
+        assert!(validate_json(&json!({"user": {"name": "ok"}}), &invalid_path).is_err());
+    }
 }

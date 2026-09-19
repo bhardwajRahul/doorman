@@ -22,7 +22,7 @@ use crate::{
         routing::select_upstream,
     },
     storage::{
-        cache::WindowCounter,
+        cache::{TokenBucketCounter, WindowCounter},
         models::{
             PolicyDocuments, bool_field, bool_field_default, find_api, find_endpoint, string_field,
             u64_field,
@@ -45,6 +45,7 @@ pub struct PolicyRequest {
 #[derive(Clone, Debug, Default)]
 pub struct PolicyRuntime {
     pub rate_counter: WindowCounter,
+    pub rate_bucket_counter: TokenBucketCounter,
     pub throttle_counter: WindowCounter,
     pub bandwidth_counter: WindowCounter,
 }
@@ -69,7 +70,10 @@ pub fn evaluate_rest_policy(
             "API is disabled",
         ));
     }
-    let settings = documents.settings.first();
+    let settings = documents
+        .settings
+        .iter()
+        .find(|settings| settings.get("type").and_then(Value::as_str) == Some("security_settings"));
     enforce_configured_api_ip_policy(
         &api,
         settings,
@@ -226,7 +230,7 @@ pub fn evaluate_rest_policy(
             .unwrap_or_else(|_| {
                 api.get("enforce_admin_subscription")
                     .and_then(Value::as_bool)
-                    .unwrap_or(false)
+                    .unwrap_or(true)
             });
 
         enforce_subscription(
@@ -237,7 +241,13 @@ pub fn evaluate_rest_policy(
             enforce_admin_sub,
         )?;
         enforce_group_access(&api, &user)?;
-        enforce_rate_limit(username, &user, &runtime.rate_counter, request.now_millis)?;
+        enforce_rate_limit(
+            username,
+            &user,
+            &runtime.rate_counter,
+            &runtime.rate_bucket_counter,
+            request.now_millis,
+        )?;
         let throttle = enforce_throttle(
             username,
             &user,
@@ -536,6 +546,58 @@ mod tests {
     use super::*;
     use http::HeaderValue;
     use serde_json::json;
+
+    #[test]
+    fn mixed_settings_records_cannot_override_api_proxy_policy() {
+        let mut documents = PolicyDocuments {
+            apis: vec![
+                json!({"api_id":"typed-policy", "api_name":"demo", "api_version":"v1",
+                "api_public":true, "api_ip_blacklist":["203.0.113.9"]}),
+            ],
+            endpoints: vec![
+                json!({"api_name":"demo", "api_version":"v1", "endpoint_method":"GET", "client_uri":"/known"}),
+            ],
+            settings: vec![
+                json!({"type":"other", "trust_x_forwarded_for":false}),
+                json!({"type":"security_settings", "trust_x_forwarded_for":true,
+                    "xff_trusted_proxies":["10.0.0.0/8"], "allow_localhost_bypass":false}),
+            ],
+            ..Default::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.9"));
+        let request = PolicyRequest {
+            method: Method::GET,
+            path: "/api/rest/demo/v1/known".to_owned(),
+            headers,
+            direct_ip: Some("10.0.0.2".parse().unwrap()),
+            now_millis: 0,
+            content_length: 0,
+        };
+        let failure = evaluate_rest_policy(
+            &mut documents,
+            &request,
+            &SharedStorageConfig::default(),
+            &PolicyRuntime::default(),
+        )
+        .unwrap_err();
+        assert_eq!(failure.error_code, "API011");
+        // Order is irrelevant, and an unrelated restrictive record is ignored
+        // when the security record does not enable forwarded-header trust.
+        documents.settings.reverse();
+        documents.settings[0]["trust_x_forwarded_for"] = json!(false);
+        documents.settings[1]["trust_x_forwarded_for"] = json!(true);
+        assert!(
+            evaluate_rest_policy(
+                &mut documents,
+                &request,
+                &SharedStorageConfig::default(),
+                &PolicyRuntime::default()
+            )
+            .unwrap()
+            .is_some()
+        );
+    }
 
     #[test]
     fn returns_endpoint_not_found_for_missing_endpoint() {

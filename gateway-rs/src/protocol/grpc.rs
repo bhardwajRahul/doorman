@@ -68,7 +68,7 @@ pub async fn execute_json_gateway(
         Err(GrpcGatewayError::Transport(message)) => {
             tracing::error!(error = %message, "native gRPC transport failed");
             policy_error(
-                StatusCode::BAD_GATEWAY,
+                StatusCode::SERVICE_UNAVAILABLE,
                 "GTW006",
                 "Upstream gRPC service unavailable",
             )
@@ -436,7 +436,15 @@ async fn execute(
     for attempt in 0..attempts {
         let result = match endpoint.clone().connect().await {
             Ok(channel) => {
-                invoke(channel, decision, headers, request.clone(), method.clone()).await
+                invoke(
+                    channel,
+                    decision,
+                    headers,
+                    request.clone(),
+                    method.clone(),
+                    false,
+                )
+                .await
             }
             Err(error) => Err(GrpcGatewayError::Transport(error.to_string())),
         };
@@ -450,7 +458,25 @@ async fn execute(
                 );
                 grpc_retry_backoff(attempt).await;
             }
-            Err(error) => return Err(error),
+            Err(primary_error) => {
+                // The Python gateway makes one final compatibility attempt without the
+                // protobuf package. Some legacy gRPC services register that path.
+                let fallback = match endpoint.clone().connect().await {
+                    Ok(channel) => {
+                        invoke(
+                            channel,
+                            decision,
+                            headers,
+                            request.clone(),
+                            method.clone(),
+                            true,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(GrpcGatewayError::Transport(error.to_string())),
+                };
+                return fallback.or(Err(primary_error));
+            }
         }
     }
     unreachable!("gRPC attempts is always at least one")
@@ -497,13 +523,16 @@ async fn invoke(
     headers: &HeaderMap,
     request: JsonGrpcRequest,
     method: MethodDescriptor,
+    unqualified_path: bool,
 ) -> Result<Value, GrpcGatewayError> {
-    let path = PathAndQuery::try_from(format!(
-        "/{}/{}",
-        method.parent_service().full_name(),
-        method.name()
-    ))
-    .map_err(|_| GrpcGatewayError::Request("Invalid gRPC method path".to_owned()))?;
+    let service = method.parent_service();
+    let path = if unqualified_path {
+        format!("/{}/{}", service.name(), method.name())
+    } else {
+        format!("/{}/{}", service.full_name(), method.name())
+    };
+    let path = PathAndQuery::try_from(path)
+        .map_err(|_| GrpcGatewayError::Request("Invalid gRPC method path".to_owned()))?;
     let codec = DynamicCodec::new(method.input(), method.output());
     let mut client = tonic::client::Grpc::new(channel);
     client
@@ -765,6 +794,7 @@ fn grpc_status_response(status: Status) -> Response {
         tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
         tonic::Code::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
+        tonic::Code::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_GATEWAY,
     };
     policy_error(http, "GTW006", status.message())
@@ -850,6 +880,50 @@ impl Decoder for DynamicDecoder {
 mod tests {
     use super::*;
 
+    fn unary_echo_descriptor(package: &str) -> Vec<u8> {
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+            MethodDescriptorProto, ServiceDescriptorProto,
+            field_descriptor_proto::{Label, Type},
+        };
+        let request_message = DescriptorProto {
+            name: Some("EchoRequest".to_owned()),
+            field: vec![FieldDescriptorProto {
+                name: Some("message".to_owned()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let response_message = DescriptorProto {
+            name: Some("EchoReply".to_owned()),
+            field: request_message.field.clone(),
+            ..Default::default()
+        };
+        FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("echo.proto".to_owned()),
+                package: Some(package.to_owned()),
+                syntax: Some("proto3".to_owned()),
+                message_type: vec![request_message, response_message],
+                service: vec![ServiceDescriptorProto {
+                    name: Some("Echo".to_owned()),
+                    method: vec![MethodDescriptorProto {
+                        name: Some("Echo".to_owned()),
+                        input_type: Some(format!(".{package}.EchoRequest")),
+                        output_type: Some(format!(".{package}.EchoReply")),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+        .encode_to_vec()
+    }
+
     #[test]
     fn normalizes_grpc_schemes_and_validates_names() {
         assert_eq!(
@@ -865,13 +939,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unreachable_secure_grpc_transport_maps_to_python_503() {
+        use axum::body::to_bytes;
+
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some("grpcs://127.0.0.1:9".to_owned()),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            request_timeout_ms: 100,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["error_code"],
+            "GTW006"
+        );
+    }
+
+    #[tokio::test]
+    async fn grpc_allowlist_and_traversal_match_python_gateway_errors() {
+        use axum::body::to_bytes;
+        use prost_types::{FileDescriptorProto, FileDescriptorSet};
+
+        let descriptor = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("allowlist.proto".to_owned()),
+                package: Some("acme".to_owned()),
+                syntax: Some("proto3".to_owned()),
+                ..Default::default()
+            }],
+        }
+        .encode_to_vec();
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+
+        let cases = [
+            (
+                PolicyDecision {
+                    grpc_descriptor_set: Some(
+                        base64::engine::general_purpose::STANDARD.encode(&descriptor),
+                    ),
+                    grpc_allowed_services: vec!["Greeter".to_owned()],
+                    ..Default::default()
+                },
+                br#"{"method":"Admin.DeleteAll","message":{}}"#.as_slice(),
+                StatusCode::FORBIDDEN,
+                "GTW013",
+            ),
+            (
+                PolicyDecision {
+                    grpc_descriptor_set: Some(
+                        base64::engine::general_purpose::STANDARD.encode(&descriptor),
+                    ),
+                    grpc_allowed_methods: vec!["Greeter.SayHello".to_owned()],
+                    ..Default::default()
+                },
+                br#"{"method":"Greeter.DeleteAll","message":{}}"#.as_slice(),
+                StatusCode::FORBIDDEN,
+                "GTW013",
+            ),
+            (
+                PolicyDecision {
+                    grpc_descriptor_set: Some(
+                        base64::engine::general_purpose::STANDARD.encode(&descriptor),
+                    ),
+                    grpc_allowed_packages: vec!["goodpkg".to_owned()],
+                    ..Default::default()
+                },
+                br#"{"method":"Greeter.SayHello","package":"badpkg","message":{}}"#.as_slice(),
+                StatusCode::FORBIDDEN,
+                "GTW013",
+            ),
+            (
+                PolicyDecision {
+                    grpc_descriptor_set: Some(
+                        base64::engine::general_purpose::STANDARD.encode(&descriptor),
+                    ),
+                    ..Default::default()
+                },
+                br#"{"method":"../Evil","message":{}}"#.as_slice(),
+                StatusCode::BAD_REQUEST,
+                "GTW011",
+            ),
+            (
+                PolicyDecision {
+                    grpc_descriptor_set: Some(
+                        base64::engine::general_purpose::STANDARD.encode(&descriptor),
+                    ),
+                    ..Default::default()
+                },
+                br#"{"method":"Svc.M","package":"../evil","message":{}}"#.as_slice(),
+                StatusCode::BAD_REQUEST,
+                "GTW011",
+            ),
+            (
+                PolicyDecision::default(),
+                br#"{"method":"Svc.M","message":{}}"#.as_slice(),
+                StatusCode::NOT_FOUND,
+                "GTW012",
+            ),
+        ];
+
+        for (decision, request, expected_status, expected_code) in cases {
+            let response =
+                execute_json_gateway(&state, &decision, &HeaderMap::new(), request).await;
+            assert_eq!(response.status(), expected_status);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap()["error_code"],
+                expected_code
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn dynamically_invokes_unary_grpc_from_json() {
         use axum::{Router, body::to_bytes, routing::post};
-        use prost_types::{
-            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
-            MethodDescriptorProto, ServiceDescriptorProto,
-            field_descriptor_proto::{Label, Type},
-        };
 
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -905,42 +1104,7 @@ mod tests {
                 .unwrap();
         });
 
-        let request_message = DescriptorProto {
-            name: Some("EchoRequest".to_owned()),
-            field: vec![FieldDescriptorProto {
-                name: Some("message".to_owned()),
-                number: Some(1),
-                label: Some(Label::Optional as i32),
-                r#type: Some(Type::String as i32),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let response_message = DescriptorProto {
-            name: Some("EchoReply".to_owned()),
-            field: request_message.field.clone(),
-            ..Default::default()
-        };
-        let descriptor = FileDescriptorSet {
-            file: vec![FileDescriptorProto {
-                name: Some("echo.proto".to_owned()),
-                package: Some("acme".to_owned()),
-                syntax: Some("proto3".to_owned()),
-                message_type: vec![request_message, response_message],
-                service: vec![ServiceDescriptorProto {
-                    name: Some("Echo".to_owned()),
-                    method: vec![MethodDescriptorProto {
-                        name: Some("Echo".to_owned()),
-                        input_type: Some(".acme.EchoRequest".to_owned()),
-                        output_type: Some(".acme.EchoReply".to_owned()),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        }
-        .encode_to_vec();
+        let descriptor = unary_echo_descriptor("acme");
         let decision = PolicyDecision {
             upstream: Some(format!("grpc://{address}")),
             grpc_descriptor_set: Some(base64::engine::general_purpose::STANDARD.encode(descriptor)),
@@ -962,6 +1126,272 @@ mod tests {
             serde_json::json!({"message":"hello"})
         );
         assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn request_and_descriptor_packages_resolve_dynamic_grpc_without_api_override() {
+        use axum::{Router, body::to_bytes, routing::post};
+
+        async fn echo(request: axum::extract::Request) -> Response {
+            let body = to_bytes(request.into_body(), 1024).await.unwrap();
+            let payload = decode_web_data_frame(&body).unwrap();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "0")
+                .body(Body::from(web_data_frame(&payload)))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/acme.Echo/Echo", post(echo)))
+                .await
+                .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        for body in [
+            br#"{"method":"Echo.Echo","package":"acme","message":{"message":"request-package"}}"#
+                .as_slice(),
+            br#"{"method":"Echo.Echo","message":{"message":"descriptor-package"}}"#.as_slice(),
+        ] {
+            let response = execute_json_gateway(&state, &decision, &HeaderMap::new(), body).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert!(
+                serde_json::from_slice::<Value>(&body).unwrap()["message"]
+                    .as_str()
+                    .is_some_and(|message| message.ends_with("package"))
+            );
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_grpc_retries_exhaustion_maps_to_python_503() {
+        use axum::{Router, body::to_bytes, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        async fn unavailable() -> Response {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "14")
+                .header("grpc-message", "still unavailable")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        CALLS.store(0, Ordering::SeqCst);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/acme.Echo/Echo", post(unavailable))
+                    .route("/Echo/Echo", post(unavailable)),
+            )
+            .await
+            .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            retry_count: 2,
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["error_code"],
+            "GTW006"
+        );
+        // Three configured attempts plus the compatibility-path attempt.
+        assert_eq!(CALLS.load(Ordering::SeqCst), 4);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_unqualified_grpc_method_path_like_python() {
+        use axum::{Router, body::to_bytes, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static PRIMARY_CALLS: AtomicUsize = AtomicUsize::new(0);
+        static FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        async fn qualified() -> Response {
+            PRIMARY_CALLS.fetch_add(1, Ordering::SeqCst);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "10")
+                .header("grpc-message", "qualified path unavailable")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        async fn unqualified(request: axum::extract::Request) -> Response {
+            FALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
+            let body = to_bytes(request.into_body(), 1024).await.unwrap();
+            let payload = decode_web_data_frame(&body).unwrap();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "0")
+                .body(Body::from(web_data_frame(&payload)))
+                .unwrap()
+        }
+
+        PRIMARY_CALLS.store(0, Ordering::SeqCst);
+        FALLBACK_CALLS.store(0, Ordering::SeqCst);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/acme.Echo/Echo", post(qualified))
+                    .route("/Echo/Echo", post(unqualified)),
+            )
+            .await
+            .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            serde_json::json!({"message":"hello"})
+        );
+        assert_eq!(PRIMARY_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(FALLBACK_CALLS.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_then_unimplemented_succeeds_via_unqualified_fallback() {
+        use axum::{Router, body::to_bytes, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static PRIMARY_CALLS: AtomicUsize = AtomicUsize::new(0);
+        static FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        async fn qualified() -> Response {
+            let status = if PRIMARY_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                "14"
+            } else {
+                "12"
+            };
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", status)
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        async fn unqualified(request: axum::extract::Request) -> Response {
+            FALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
+            let body = to_bytes(request.into_body(), 1024).await.unwrap();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "0")
+                .body(Body::from(web_data_frame(
+                    &decode_web_data_frame(&body).unwrap(),
+                )))
+                .unwrap()
+        }
+
+        PRIMARY_CALLS.store(0, Ordering::SeqCst);
+        FALLBACK_CALLS.store(0, Ordering::SeqCst);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/acme.Echo/Echo", post(qualified))
+                    .route("/Echo/Echo", post(unqualified)),
+            )
+            .await
+            .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            retry_count: 1,
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(PRIMARY_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(FALLBACK_CALLS.load(Ordering::SeqCst), 1);
         server.abort();
     }
 

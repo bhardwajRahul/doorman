@@ -444,6 +444,120 @@ async fn missing_endpoint_fails_closed_without_a_fallback() {
 }
 
 #[tokio::test]
+async fn rest_head_uses_a_registered_get_endpoint_like_python() {
+    let (upstream_url, server) =
+        spawn_upstream(Router::new().route("/p", any(|| async { StatusCode::OK }))).await;
+    let state = AppState::new(Config::for_test("removed-internal-backend".to_owned()))
+        .unwrap()
+        .with_policy_documents(PolicyDocuments {
+            apis: vec![json!({
+                "api_id": "api-head",
+                "api_name": "headok",
+                "api_version": "v1",
+                "api_public": true,
+                "api_servers": [upstream_url],
+            })],
+            endpoints: vec![json!({
+                "api_name": "headok",
+                "api_version": "v1",
+                "endpoint_method": "GET",
+                "client_uri": "/p",
+                "endpoint_uri": "/p",
+            })],
+            ..Default::default()
+        });
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri("/api/rest/headok/v1/p")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    server.abort();
+}
+
+#[tokio::test]
+async fn strict_options_returns_405_for_an_unregistered_rest_endpoint() {
+    if std::env::var_os("DOORMAN_STRICT_OPTIONS_CHILD").is_some() {
+        let state = AppState::new(Config::for_test("http://127.0.0.1:9".to_owned()))
+            .unwrap()
+            .with_policy_documents(PolicyDocuments {
+                apis: vec![json!({
+                    "api_id": "api-options",
+                    "api_name": "optunreg",
+                    "api_version": "v1",
+                    "api_public": true,
+                })],
+                ..Default::default()
+            });
+        let response = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/api/rest/optunreg/v1/not-made")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "strict_options_returns_405_for_an_unregistered_rest_endpoint",
+            "--nocapture",
+        ])
+        .env("DOORMAN_STRICT_OPTIONS_CHILD", "1")
+        .env("STRICT_OPTIONS_405", "true")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn unsupported_rest_method_returns_405_like_python() {
+    let state = AppState::new(Config::for_test("http://127.0.0.1:9".to_owned()))
+        .unwrap()
+        .with_policy_documents(PolicyDocuments {
+            apis: vec![json!({
+                "api_id": "api-trace",
+                "api_name": "unsup",
+                "api_version": "v1",
+                "api_public": true,
+            })],
+            endpoints: vec![json!({
+                "api_name": "unsup",
+                "api_version": "v1",
+                "endpoint_method": "GET",
+                "client_uri": "/p",
+            })],
+            ..Default::default()
+        });
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("TRACE")
+                .uri("/api/rest/unsup/v1/p")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn rust_policy_enforcement_rejects_rest_before_upstream() {
     let (upstream_url, server) = spawn_upstream(Router::new().route(
         "/api/rest/demo/v1/missing",
@@ -585,8 +699,14 @@ async fn soap_nested_route_uses_the_original_public_uri() {
 
 #[tokio::test]
 async fn rust_compresses_large_gateway_responses_when_requested() {
-    let (upstream_url, server) =
-        spawn_upstream(Router::new().route("/large", get(|| async { "x".repeat(800) }))).await;
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let (upstream_url, server) = spawn_upstream(Router::new().route(
+        "/large",
+        get(|| async { Json(json!({"items": vec!["x"; 800]})) }),
+    ))
+    .await;
     let config = Config::for_test("http://127.0.0.1:9".to_owned());
     let state = AppState::new(config)
         .unwrap()
@@ -607,7 +727,30 @@ async fn rust_compresses_large_gateway_responses_when_requested() {
             })],
             ..Default::default()
         });
-    let response = build_router(state)
+    let app = build_router(state);
+    let uncompressed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/rest/compressed/v1/large")
+                .header("accept-encoding", "identity")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uncompressed.status(), StatusCode::OK);
+    assert!(
+        uncompressed.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    assert!(!uncompressed.headers().contains_key("content-encoding"));
+    let uncompressed = to_bytes(uncompressed.into_body(), 4096).await.unwrap();
+    let uncompressed_json: Value = serde_json::from_slice(&uncompressed).unwrap();
+
+    let response = app
         .oneshot(
             Request::builder()
                 .uri("/api/rest/compressed/v1/large")
@@ -626,8 +769,18 @@ async fn rust_compresses_large_gateway_responses_when_requested() {
             .unwrap()
             .contains("accept-encoding")
     );
-    let body = to_bytes(response.into_body(), 4096).await.unwrap();
-    assert_eq!(&body[..2], &[0x1f, 0x8b]);
+    let compressed = to_bytes(response.into_body(), 4096).await.unwrap();
+    assert_eq!(&compressed[..2], &[0x1f, 0x8b]);
+    assert!(compressed.len() < uncompressed.len());
+    let mut decoded = Vec::new();
+    GzDecoder::new(compressed.as_ref())
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, uncompressed);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&decoded).unwrap(),
+        uncompressed_json
+    );
     server.abort();
 }
 
@@ -705,7 +858,192 @@ async fn oversized_rest_body_returns_legacy_413_without_reaching_upstream() {
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
-    assert_eq!(body["error_code"], "GTW013");
-    assert_eq!(body["error_message"], "Request body too large");
+    assert_eq!(body["error_code"], "REQ001");
+    assert_eq!(
+        body["error_message"],
+        "Request entity too large (max: 1048576 bytes)"
+    );
     server.abort();
+}
+
+#[tokio::test]
+async fn rest_body_limit_matches_python_configured_boundary_contract() {
+    if std::env::var_os("DOORMAN_REST_BODY_LIMIT_CHILD").is_some() {
+        let (upstream_url, server) =
+            spawn_upstream(Router::new().route("/items", any(|| async { StatusCode::OK }))).await;
+        let state = AppState::new(Config::for_test("removed-internal-backend".to_owned()))
+            .unwrap()
+            .with_policy_documents(PolicyDocuments {
+                apis: vec![json!({
+                    "api_id": "api-body-limit-boundary",
+                    "api_name": "limited-boundary",
+                    "api_version": "v1",
+                    "api_public": true,
+                    "api_servers": [upstream_url],
+                })],
+                endpoints: vec![
+                    json!({
+                        "api_name": "limited-boundary",
+                        "api_version": "v1",
+                        "endpoint_method": "POST",
+                        "client_uri": "/items",
+                        "endpoint_uri": "/items",
+                    }),
+                    json!({
+                        "api_name": "limited-boundary",
+                        "api_version": "v1",
+                        "endpoint_method": "GET",
+                        "client_uri": "/items",
+                        "endpoint_uri": "/items",
+                    }),
+                    json!({
+                        "api_name": "limited-boundary",
+                        "api_version": "v1",
+                        "endpoint_method": "POST",
+                        "client_uri": "/soap",
+                        "endpoint_uri": "/items",
+                    }),
+                    json!({
+                        "api_name": "limited-boundary",
+                        "api_version": "v1",
+                        "endpoint_method": "POST",
+                        "client_uri": "/graphql",
+                        "endpoint_uri": "/items",
+                    }),
+                ],
+                ..Default::default()
+            });
+
+        let oversized = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/rest/limited-boundary/v1/items")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_LENGTH, "11")
+                    .body(Body::from("12345678901"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let oversized_body: Value =
+            serde_json::from_slice(&to_bytes(oversized.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(oversized_body["error_code"], "REQ001");
+        assert_eq!(
+            oversized_body["error_message"],
+            "Request entity too large (max: 10 bytes)"
+        );
+
+        let spoofed_chunked = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/rest/limited-boundary/v1/items")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::TRANSFER_ENCODING, "chunked")
+                    .header(header::CONTENT_LENGTH, "5")
+                    .body(Body::from("12345678901"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spoofed_chunked.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let spoofed_body: Value =
+            serde_json::from_slice(&to_bytes(spoofed_chunked.into_body(), 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(spoofed_body["error_code"], "REQ001");
+
+        let at_limit = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/rest/limited-boundary/v1/items")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_LENGTH, "10")
+                    .body(Body::from("1234567890"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(at_limit.status(), StatusCode::OK);
+
+        let soap_within_protocol_limit = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/soap/limited-boundary/v1/soap")
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .header(header::TRANSFER_ENCODING, "chunked")
+                    .body(Body::from("<x>1234567890</x>"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            soap_within_protocol_limit.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+
+        let graphql_over_protocol_limit = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/graphql/limited-boundary")
+                    .header("x-api-version", "v1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::TRANSFER_ENCODING, "chunked")
+                    .body(Body::from("123456"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            graphql_over_protocol_limit.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &to_bytes(graphql_over_protocol_limit.into_body(), 1024)
+                    .await
+                    .unwrap()
+            )
+            .unwrap()["error_code"],
+            "REQ001"
+        );
+
+        let no_content_length = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/rest/limited-boundary/v1/items")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(no_content_length.status(), StatusCode::OK);
+        server.abort();
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "rest_body_limit_matches_python_configured_boundary_contract",
+            "--nocapture",
+        ])
+        .env("DOORMAN_REST_BODY_LIMIT_CHILD", "1")
+        .env("MAX_BODY_SIZE_BYTES", "10")
+        .env_remove("MAX_BODY_SIZE_BYTES_REST")
+        .env("MAX_BODY_SIZE_BYTES_SOAP", "20")
+        .env("MAX_BODY_SIZE_BYTES_GRAPHQL", "5")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

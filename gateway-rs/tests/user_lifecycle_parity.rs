@@ -98,19 +98,92 @@ async fn json_request(
 }
 
 async fn login_admin(app: &Router) -> String {
+    login_as(app, "admin@doorman.dev", "AdminPassword123!").await
+}
+
+async fn login_as(app: &Router, email: &str, password: &str) -> String {
     let (status, body) = json_request(
         app,
         None,
         Method::POST,
         "/platform/authorization",
         Some(json!({
-            "email": "admin@doorman.dev",
-            "password": "AdminPassword123!"
+            "email": email,
+            "password": password
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     body["access_token"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn self_service_updates_cannot_escalate_privileges() {
+    let app = test_app().await;
+    let admin = login_admin(&app).await;
+    let (status, role) = json_request(
+        &app,
+        Some(&admin),
+        Method::POST,
+        "/platform/role",
+        Some(json!({"role_name": "limited", "manage_users": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{role}");
+    let password = "LimitedPassword123!";
+    let (status, user) = json_request(
+        &app,
+        Some(&admin),
+        Method::POST,
+        "/platform/user",
+        Some(json!({
+            "username": "limited_user",
+            "email": "limited@example.com",
+            "password": password,
+            "role": "limited",
+            "groups": ["ALL"],
+            "active": true,
+            "ui_access": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{user}");
+    let limited = login_as(&app, "limited@example.com", password).await;
+    for payload in [
+        json!({"role": "admin"}),
+        json!({"groups": ["ALL", "admin"]}),
+        json!({"active": false}),
+        json!({"username": "escalated"}),
+    ] {
+        let (status, body) = json_request(
+            &app,
+            Some(&limited),
+            Method::PUT,
+            "/platform/user/limited_user",
+            Some(payload),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error_code"], "USR023");
+    }
+    let (status, body) = json_request(
+        &app,
+        Some(&limited),
+        Method::PUT,
+        "/platform/user/limited_user",
+        Some(json!({"email": "updated@example.com"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = json_request(
+        &app,
+        Some(&admin),
+        Method::PUT,
+        "/platform/user/limited_user",
+        Some(json!({"role": "admin"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 // Python source: backend-services/tests/test_user_endpoints.py::test_user_me_and_crud
@@ -174,6 +247,166 @@ async fn python_test_user_me_and_crud() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn admin_can_read_list_update_and_delete_administrator_resources() {
+    let app = test_app().await;
+    let token = login_admin(&app).await;
+
+    let (status, role) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/role/admin",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{role}");
+    assert_eq!(role["role_name"], "admin");
+
+    let (status, roles) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/role/all?page=1&page_size=50",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{roles}");
+    assert!(
+        roles["response"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|role| role["role_name"] == "admin")
+    );
+
+    let (status, users) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/user/all?page=1&page_size=100",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{users}");
+    assert!(
+        users["response"]["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|user| user["username"] == "admin")
+    );
+
+    let description = "Administrator role parity description";
+    let (status, updated_role) = json_request(
+        &app,
+        Some(&token),
+        Method::PUT,
+        "/platform/role/admin",
+        Some(json!({"role_description": description})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated_role}");
+    let (status, role) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/role/admin",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{role}");
+    assert_eq!(role["role_description"], description);
+
+    let (status, admin_by_email) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/user/email/admin@doorman.dev",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admin_by_email}");
+    assert_eq!(admin_by_email["username"], "admin");
+    let (status, update) = json_request(
+        &app,
+        Some(&token),
+        Method::PUT,
+        "/platform/user/admin",
+        Some(json!({"email": "new-email@example.com"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{update}");
+    assert_eq!(update["error_code"], "USR020");
+    let (status, deleted_admin) = json_request(
+        &app,
+        Some(&token),
+        Method::DELETE,
+        "/platform/user/admin",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{deleted_admin}");
+    assert_eq!(deleted_admin["error_code"], "USR021");
+    let (status, password) = json_request(
+        &app,
+        Some(&token),
+        Method::PUT,
+        "/platform/user/admin/update-password",
+        Some(json!({"current_password": "anything", "new_password": "NewPassword!123"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{password}");
+    assert_eq!(password["error_code"], "USR022");
+
+    let username = "parity_admin";
+    let (status, created) = json_request(
+        &app,
+        Some(&token),
+        Method::POST,
+        "/platform/user",
+        Some(json!({
+            "username": username,
+            "email": "parity_admin@example.com",
+            "password": "ParityAdminPassword123!",
+            "role": "admin",
+            "groups": ["ALL", "admin"],
+            "active": true,
+            "ui_access": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (status, user) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/user/parity_admin",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{user}");
+    assert_eq!(user["username"], username);
+    let (status, deleted) = json_request(
+        &app,
+        Some(&token),
+        Method::DELETE,
+        "/platform/user/parity_admin",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let (status, _) = json_request(
+        &app,
+        Some(&token),
+        Method::GET,
+        "/platform/user/parity_admin",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // Python source:

@@ -272,6 +272,7 @@ async fn authed_json_response(
                 .method(method)
                 .uri(uri.as_ref())
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("x-api-version", "v1")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
@@ -324,6 +325,33 @@ async fn start_echo_upstream() -> (String, JoinHandle<()>) {
                 .route("/hit", any(echo_upstream))
                 .route("/p", any(echo_upstream))
                 .route("/items", any(echo_upstream)),
+        )
+        .await
+        .unwrap();
+    });
+    (format!("http://{address}"), server)
+}
+
+async fn request_id_upstream(headers: HeaderMap) -> Response {
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-upstream-request-id", request_id)
+        .body(Body::from(json!({"request_id": request_id}).to_string()))
+        .unwrap()
+}
+
+async fn start_request_id_upstream() -> (String, JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/echo", any(request_id_upstream)),
         )
         .await
         .unwrap();
@@ -612,21 +640,42 @@ async fn rest_retries_real_upstream_status_sequences_parity() {
     let (retry_503_url, retry_503, retry_503_server) =
         start_rest_status_sequence_upstream(vec![StatusCode::SERVICE_UNAVAILABLE, StatusCode::OK])
             .await;
+    let (retry_502_url, retry_502, retry_502_server) =
+        start_rest_status_sequence_upstream(vec![StatusCode::BAD_GATEWAY, StatusCode::OK]).await;
+    let (retry_504_url, retry_504, retry_504_server) =
+        start_rest_status_sequence_upstream(vec![StatusCode::GATEWAY_TIMEOUT, StatusCode::OK])
+            .await;
     let (no_retry_url, no_retry, no_retry_server) = start_rest_status_sequence_upstream(vec![
         StatusCode::INTERNAL_SERVER_ERROR,
         StatusCode::INTERNAL_SERVER_ERROR,
     ])
     .await;
+    let (retry_limit_url, retry_limit, retry_limit_server) =
+        start_rest_status_sequence_upstream(vec![
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::OK,
+        ])
+        .await;
 
     for (api_name, upstream_url, retry_count, expected_status, expected_attempts) in [
         ("rest-retry-500", retry_500_url, 1, StatusCode::OK, 2),
+        ("rest-retry-502", retry_502_url, 1, StatusCode::OK, 2),
         ("rest-retry-503", retry_503_url, 1, StatusCode::OK, 2),
+        ("rest-retry-504", retry_504_url, 1, StatusCode::OK, 2),
         (
             "rest-no-retry",
             no_retry_url,
             0,
             StatusCode::INTERNAL_SERVER_ERROR,
             1,
+        ),
+        (
+            "rest-retry-limit",
+            retry_limit_url,
+            1,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            2,
         ),
     ] {
         let (status, _) = authed_json_response(
@@ -691,15 +740,21 @@ async fn rest_retries_real_upstream_status_sequences_parity() {
         assert_eq!(body["ok"], expected_status.is_success(), "{api_name}");
         let attempts = match api_name {
             "rest-retry-500" => retry_500.attempts.load(Ordering::SeqCst),
+            "rest-retry-502" => retry_502.attempts.load(Ordering::SeqCst),
             "rest-retry-503" => retry_503.attempts.load(Ordering::SeqCst),
+            "rest-retry-504" => retry_504.attempts.load(Ordering::SeqCst),
             "rest-no-retry" => no_retry.attempts.load(Ordering::SeqCst),
+            "rest-retry-limit" => retry_limit.attempts.load(Ordering::SeqCst),
             _ => unreachable!(),
         };
         assert_eq!(attempts, expected_attempts, "{api_name}");
     }
     retry_500_server.abort();
+    retry_502_server.abort();
     retry_503_server.abort();
+    retry_504_server.abort();
     no_retry_server.abort();
+    retry_limit_server.abort();
 }
 
 #[tokio::test]
@@ -1224,6 +1279,26 @@ async fn monitor_gateway_get(app: &axum::Router, token: &str, api_name: &str) ->
         .await
         .unwrap()
         .status()
+}
+
+#[tokio::test]
+async fn monitor_metrics_accepts_python_range_parameters_parity() {
+    let app = build_router(test_app_state().await);
+    let token = login_admin(&app).await;
+
+    for range in ["1h", "24h", "7d", "30d"] {
+        let (status, metrics) = authed_empty_response(
+            &app,
+            &token,
+            Method::GET,
+            &format!("/platform/monitor/metrics?range={range}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "range={range}");
+        assert!(metrics.is_object());
+        assert!(metrics["series"].is_array());
+        assert!(metrics["status_counts"].is_object());
+    }
 }
 
 #[tokio::test]
@@ -1946,7 +2021,7 @@ async fn live_test_30_rest_gateway_basic_crud_and_subscription_parity() {
                     json!({
                         "api_name": api_name,
                         "api_version": api_version,
-                        "endpoint_method": "GET",
+                        "endpoint_method": "POST",
                         "endpoint_uri": "/status",
                         "endpoint_description": "status"
                     })
@@ -1957,6 +2032,35 @@ async fn live_test_30_rest_gateway_basic_crud_and_subscription_parity() {
         .await
         .unwrap();
     assert!(response.status().is_success());
+
+    // A valid nested payload must pass the configured validation schema and
+    // continue to the real upstream, rather than only passing local parsing.
+    let (status, endpoint) = authed_empty_response(
+        &app,
+        &token,
+        Method::GET,
+        &format!("/platform/endpoint/POST/{api_name}/{api_version}/status"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let endpoint_id = endpoint["endpoint_id"].as_str().unwrap();
+    let (status, _) = authed_json_response(
+        &app,
+        &token,
+        Method::POST,
+        "/platform/endpoint/endpoint/validation",
+        json!({
+            "endpoint_id": endpoint_id,
+            "validation_enabled": true,
+            "validation_schema": {
+                "validation_schema": {
+                    "user.name": {"required": true, "type": "string", "min": 2}
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(status.is_success());
 
     // Subscribe: POST /platform/subscription/subscribe
     let response = app
@@ -1982,16 +2086,42 @@ async fn live_test_30_rest_gateway_basic_crud_and_subscription_parity() {
     assert!(response.status().is_success());
 
     // Gateway request must reach the configured upstream with the registered path.
-    let (status, body) = authed_empty_response(
+    let (status, body) = authed_json_response(
         &app,
         &token,
-        Method::GET,
+        Method::POST,
         &format!("/api/rest/{api_name}/{api_version}/status"),
+        json!({"user": {"name": "Ada"}}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["method"], "GET");
+    assert_eq!(body["method"], "POST");
     assert_eq!(body["path"], "/status");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/rest/{api_name}/{api_version}/status"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("x-request-id", "python-header-normalization")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"user": {"name": "Ada"}}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key("x-request-id"));
+    assert!(response.headers().contains_key("request_id"));
+    assert_eq!(
+        response.headers()["x-request-id"],
+        "python-header-normalization"
+    );
+    assert_eq!(
+        response.headers()["request_id"],
+        "python-header-normalization"
+    );
     upstream.abort();
     // DELETE Endpoint & API
     let response = app
@@ -2000,7 +2130,7 @@ async fn live_test_30_rest_gateway_basic_crud_and_subscription_parity() {
             Request::builder()
                 .method("DELETE")
                 .uri(format!(
-                    "/platform/endpoint/GET/{api_name}/{api_version}/status"
+                    "/platform/endpoint/POST/{api_name}/{api_version}/status"
                 ))
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::empty())
@@ -2026,6 +2156,74 @@ async fn live_test_30_rest_gateway_basic_crud_and_subscription_parity() {
 }
 
 #[tokio::test]
+async fn request_id_is_forwarded_to_authenticated_rest_upstream_and_response() {
+    let app = build_router(test_app_state().await);
+    let token = login_admin(&app).await;
+    let (upstream_url, upstream) = start_request_id_upstream().await;
+    let api_name = "request-id-propagation";
+    let api_version = "v1";
+    for (path, payload) in [
+        (
+            "/platform/api",
+            json!({
+                "api_name": api_name,
+                "api_version": api_version,
+                "api_description": "request-id propagation",
+                "api_allowed_roles": ["admin"],
+                "api_allowed_groups": ["ALL"],
+                "api_servers": [upstream_url],
+                "api_type": "REST",
+                "api_allowed_retry_count": 0,
+                "api_allowed_headers": ["X-Upstream-Request-ID"],
+                "active": true
+            }),
+        ),
+        (
+            "/platform/endpoint",
+            json!({
+                "api_name": api_name,
+                "api_version": api_version,
+                "endpoint_method": "GET",
+                "endpoint_uri": "/echo",
+                "endpoint_description": "request-id echo"
+            }),
+        ),
+        (
+            "/platform/subscription/subscribe",
+            json!({"username": "admin", "api_name": api_name, "api_version": api_version}),
+        ),
+    ] {
+        let (status, _) = authed_json_response(&app, &token, Method::POST, path, payload).await;
+        assert!(status.is_success(), "{path}: {status}");
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/rest/{api_name}/{api_version}/echo"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(!request_id.is_empty());
+    assert_eq!(response.headers()["x-upstream-request-id"], request_id);
+    let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["request_id"],
+        request_id
+    );
+    upstream.abort();
+}
+
+#[tokio::test]
 async fn live_test_21_subscription_list_unsubscribe_parity() {
     let app = build_router(test_app_state().await);
     let token = login_admin(&app).await;
@@ -2045,6 +2243,31 @@ async fn live_test_21_subscription_list_unsubscribe_parity() {
     let (status, _) = authed_json_response(&app, &token, Method::POST, "/platform/api", api).await;
     assert!(status.is_success());
 
+    let endpoint = json!({
+        "api_name": api_name,
+        "api_version": api_version,
+        "endpoint_method": "GET",
+        "endpoint_uri": "/restricted",
+        "endpoint_description": "restricted subscription route"
+    });
+    let (status, _) =
+        authed_json_response(&app, &token, Method::POST, "/platform/endpoint", endpoint).await;
+    assert!(status.is_success());
+
+    let restricted_request = || {
+        Request::builder()
+            .method(Method::GET)
+            .uri(format!("/api/rest/{api_name}/{api_version}/restricted"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = app.clone().oneshot(restricted_request()).await.unwrap();
+    assert!(matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ));
+
     let subscription =
         json!({"api_name": api_name, "api_version": api_version, "username": "admin"});
     let (status, _) = authed_json_response(
@@ -2056,6 +2279,12 @@ async fn live_test_21_subscription_list_unsubscribe_parity() {
     )
     .await;
     assert!(status.is_success());
+
+    let response = app.clone().oneshot(restricted_request()).await.unwrap();
+    assert!(!matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ));
 
     let (status, body) = authed_empty_response(
         &app,
@@ -2078,6 +2307,12 @@ async fn live_test_21_subscription_list_unsubscribe_parity() {
     )
     .await;
     assert!(status.is_success());
+
+    let response = app.clone().oneshot(restricted_request()).await.unwrap();
+    assert!(matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ));
 
     let (status, _) = authed_empty_response(
         &app,
@@ -2104,6 +2339,26 @@ async fn live_test_31_endpoint_update_list_delete_parity() {
     let (status, _) =
         authed_json_response(&app, &token, Method::POST, "/platform/endpoint", endpoint).await;
     assert!(status.is_success());
+
+    // Keep multiple protocol methods on the same API discoverable through the
+    // endpoint collection, as required by the Python onboarding contract.
+    for (method, uri) in [("POST", "/b"), ("PUT", "/c")] {
+        let (status, _) = authed_json_response(
+            &app,
+            &token,
+            Method::POST,
+            "/platform/endpoint",
+            json!({
+                "api_name": api_name,
+                "api_version": api_version,
+                "endpoint_method": method,
+                "endpoint_uri": uri,
+                "endpoint_description": format!("{method} {uri}"),
+            }),
+        )
+        .await;
+        assert!(status.is_success());
+    }
 
     let (status, _) = authed_json_response(
         &app,
@@ -2136,6 +2391,16 @@ async fn live_test_31_endpoint_update_list_delete_parity() {
         endpoints
             .iter()
             .any(|endpoint| endpoint["endpoint_description"] == "zzz")
+    );
+    assert!(
+        endpoints.len() >= 3
+            && endpoints.iter().any(|endpoint| {
+                endpoint["endpoint_method"] == "POST" && endpoint["endpoint_uri"] == "/b"
+            })
+            && endpoints.iter().any(|endpoint| {
+                endpoint["endpoint_method"] == "PUT" && endpoint["endpoint_uri"] == "/c"
+            }),
+        "unexpected endpoint list response: {body}"
     );
 
     let (status, _) = authed_empty_response(
@@ -2849,6 +3114,16 @@ async fn live_test_41_soap_and_85_endpoint_validation_parity() {
         .unwrap();
     assert!(response.status().is_success());
 
+    let (status, _) = authed_json_response(
+        &app,
+        &token,
+        Method::POST,
+        "/platform/subscription/subscribe",
+        json!({"username": "admin", "api_name": api_name, "api_version": api_version}),
+    )
+    .await;
+    assert!(status.is_success());
+
     // Enable validation on endpoint via /platform/endpoint/endpoint/validation
     let response = app
         .clone()
@@ -2998,7 +3273,10 @@ async fn public_gateway_status(
     content_type: Option<&str>,
     body: Body,
 ) -> StatusCode {
-    let mut builder = Request::builder().method(method).uri(uri.as_ref());
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri.as_ref())
+        .header("x-test", "1");
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
@@ -3056,15 +3334,17 @@ async fn live_test_93_public_and_auth_optional_allow_unauthenticated() {
         .await;
         assert!(status.is_success());
 
-        let status = public_gateway_status(
-            &app,
-            Method::GET,
-            format!("/api/rest/{api_name}/v1{endpoint_uri}"),
-            None,
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        for _ in 0..2 {
+            let status = public_gateway_status(
+                &app,
+                Method::GET,
+                format!("/api/rest/{api_name}/v1{endpoint_uri}?a=1&b=two"),
+                None,
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
     }
 
     upstream.abort();
@@ -3078,7 +3358,7 @@ async fn live_test_35_bulk_public_rest_crud_parity() {
 
     for index in 0..3 {
         let api_name = format!("bulk-public-rest-35-{index}");
-        let api = json!({"api_name": api_name, "api_version": "v1", "api_description": "public REST bulk parity", "api_allowed_roles": [], "api_allowed_groups": [], "api_servers": [&upstream_url], "api_type": "SOAP", "active": true, "api_public": true});
+        let api = json!({"api_name": api_name, "api_version": "v1", "api_description": "public REST bulk parity", "api_allowed_roles": [], "api_allowed_groups": ["ALL"], "api_servers": [&upstream_url], "api_type": "SOAP", "active": true, "api_public": true});
         let (status, _) =
             authed_json_response(&app, &token, Method::POST, "/platform/api", api).await;
         assert!(status.is_success());
@@ -3090,6 +3370,18 @@ async fn live_test_35_bulk_public_rest_crud_parity() {
                     .await;
             assert!(status.is_success());
         }
+
+        // Public APIs remain callable without credentials even after the administrator
+        // has been subscribed, matching the public-API subscription matrix contract.
+        let (status, _) = authed_json_response(
+            &app,
+            &token,
+            Method::POST,
+            "/platform/subscription/subscribe",
+            json!({"api_name": api_name, "api_version": "v1", "username": "admin"}),
+        )
+        .await;
+        assert!(status.is_success());
 
         for method in [Method::GET, Method::POST, Method::PUT, Method::DELETE] {
             let body = if matches!(method, Method::POST | Method::PUT) {
@@ -3186,6 +3478,96 @@ async fn start_graphql_upstream() -> (String, JoinHandle<()>) {
         .unwrap();
     });
     (format!("http://{address}"), server)
+}
+
+async fn graphql_public_crud_upstream(Json(_payload): Json<Value>) -> Json<Value> {
+    Json(json!({"data": {"ok": true}}))
+}
+
+async fn start_graphql_public_crud_upstream() -> (String, JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/graphql",
+                axum::routing::post(graphql_public_crud_upstream),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    (format!("http://{address}"), server)
+}
+
+// Python: backend-services/live-tests/test_35_public_bulk_onboarding.py::test_bulk_public_graphql_crud
+#[tokio::test]
+async fn live_test_35_bulk_public_graphql_crud_parity() {
+    let (upstream_url, upstream) = start_graphql_public_crud_upstream().await;
+    let app = build_router(test_app_state().await);
+    let token = login_admin(&app).await;
+
+    for index in 0..3 {
+        let api_name = format!("bulk-public-graphql-35-{index}");
+        let (status, _) = authed_json_response(
+            &app,
+            &token,
+            Method::POST,
+            "/platform/api",
+            json!({
+                "api_name": api_name,
+                "api_version": "v1",
+                "api_description": "public GraphQL bulk parity",
+                "api_allowed_roles": [],
+                "api_allowed_groups": [],
+                "api_servers": [&upstream_url],
+                "api_type": "GRAPHQL",
+                "api_public": true,
+                "active": true,
+            }),
+        )
+        .await;
+        assert!(status.is_success());
+        let (status, _) = authed_json_response(
+            &app,
+            &token,
+            Method::POST,
+            "/platform/endpoint",
+            json!({
+                "api_name": api_name,
+                "api_version": "v1",
+                "endpoint_method": "POST",
+                "endpoint_uri": "/graphql",
+                "endpoint_description": "public GraphQL endpoint",
+            }),
+        )
+        .await;
+        assert!(status.is_success());
+
+        for query in [
+            "mutation { create(name: \"A\") }",
+            "mutation { update(id: 1, name: \"B\") }",
+            "{ read(id: 1) }",
+            "mutation { delete(id: 1) }",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(format!("/api/graphql/{api_name}"))
+                        .header("x-api-version", "v1")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({"query": query}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{query}");
+        }
+    }
+    upstream.abort();
 }
 
 async fn graphql_variable_hello(Json(payload): Json<Value>) -> Json<Value> {
@@ -3538,7 +3920,6 @@ message DeleteReply { bool ok = 1; }
             "api_servers": [upstream_url],
             "api_type": "GRPC",
             "api_allowed_retry_count": 0,
-            "api_grpc_package": "grpcpublic_v1",
             "api_public": true,
             "active": true
         }),
@@ -3561,6 +3942,36 @@ message DeleteReply { bool ok = 1; }
         .unwrap();
     assert_eq!(uploaded.status(), StatusCode::OK);
 
+    let fetched = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/platform/proto/{api_name}/{api_version}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let fetched = to_bytes(fetched.into_body(), 64 * 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&fetched)
+            .unwrap()
+            .contains("package grpcpublic_v1")
+    );
+
+    let (status, api) = authed_empty_response(
+        &app,
+        &token,
+        Method::GET,
+        &format!("/platform/api/{api_name}/{api_version}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(api["api_grpc_package"], "grpcpublic_v1");
+
     let (status, _) = authed_json_response(
         &app,
         &token,
@@ -3576,6 +3987,23 @@ message DeleteReply { bool ok = 1; }
     )
     .await;
     assert!(status.is_success());
+
+    let public_preflight = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri(format!("/api/grpc/{api_name}"))
+                .header("x-api-version", api_version)
+                .header(header::ORIGIN, "https://example.test")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "Content-Type")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(public_preflight.status(), StatusCode::NO_CONTENT);
 
     for (request, expected) in [
         (
@@ -3686,6 +4114,35 @@ message HelloReply { string message = 1; }
         assert!(status.is_success(), "{path}: {status}");
     }
 
+    // Match the Python good-payload contract: endpoint validation must allow a
+    // valid gRPC message to reach and complete at the actual upstream.
+    let (status, endpoint) = authed_empty_response(
+        &app,
+        &token,
+        Method::GET,
+        &format!("/platform/endpoint/POST/{api_name}/{api_version}/grpc"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let endpoint_id = endpoint["endpoint_id"].as_str().unwrap();
+    let (status, _) = authed_json_response(
+        &app,
+        &token,
+        Method::POST,
+        "/platform/endpoint/endpoint/validation",
+        json!({
+            "endpoint_id": endpoint_id,
+            "validation_enabled": true,
+            "validation_schema": {
+                "validation_schema": {
+                    "name": {"required": true, "type": "string", "min": 2}
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(status.is_success());
+
     let response = app
         .clone()
         .oneshot(
@@ -3780,7 +4237,85 @@ message HelloReply { string message = 1; }
         assert!(status.is_success(), "{path}: {status}");
     }
 
+    // The policy gate must reject an authenticated caller before attempting the
+    // JSON-to-gRPC invocation when that caller has not subscribed to this API.
+    let (status, _) = authed_json_response(
+        &app,
+        &token,
+        Method::POST,
+        "/platform/user",
+        json!({
+            "username": "grpc-unsubscribed",
+            "email": "grpc-unsubscribed@example.com",
+            "password": "GrpcUnsubscribedPassword123!",
+            "role": "admin",
+            "groups": ["ALL"],
+            "active": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let unsubscribed_token = {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/platform/authorization")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "grpc-unsubscribed@example.com",
+                            "password": "GrpcUnsubscribedPassword123!"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response_json(response).await.1["access_token"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/grpc/{api_name}"))
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {unsubscribed_token}"),
+                )
+                .header("x-api-version", api_version)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"method": "Greeter.Hello", "message": {}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = response_json(response).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["error_code"],
+        "You are not subscribed to this resource"
+    );
+
+    let (_, metrics_before) =
+        authed_empty_response(&app, &token, Method::GET, "/platform/monitor/metrics").await;
+    let grpc_request_bytes = json!({"method": "Greeter.Hello", "message": {"name": "Doorman"}})
+        .to_string()
+        .len() as u64;
+
     for (grpc_status, expected_status) in [
+        ("2", StatusCode::INTERNAL_SERVER_ERROR),
+        ("3", StatusCode::BAD_REQUEST),
+        ("4", StatusCode::GATEWAY_TIMEOUT),
         ("16", StatusCode::UNAUTHORIZED),
         ("7", StatusCode::FORBIDDEN),
         ("5", StatusCode::NOT_FOUND),
@@ -3810,6 +4345,16 @@ message HelloReply { string message = 1; }
         assert_eq!(status, expected_status, "gRPC status {grpc_status}");
         assert_eq!(body["error_code"], "GTW006");
     }
+    let (_, metrics_after) =
+        authed_empty_response(&app, &token, Method::GET, "/platform/monitor/metrics").await;
+    assert!(
+        metrics_after["total_bytes_in"].as_u64().unwrap_or(0)
+            >= metrics_before["total_bytes_in"].as_u64().unwrap_or(0) + grpc_request_bytes * 9
+    );
+    assert!(
+        metrics_after["total_bytes_out"].as_u64().unwrap_or(0)
+            > metrics_before["total_bytes_out"].as_u64().unwrap_or(0)
+    );
     upstream.abort();
 }
 
@@ -4520,6 +5065,20 @@ async fn live_test_40_soap_gateway_basic_flow_parity() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/xml")
+    );
+    let body = String::from_utf8(
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(body.contains("<Ok/>"));
     upstream.abort();
 }
 

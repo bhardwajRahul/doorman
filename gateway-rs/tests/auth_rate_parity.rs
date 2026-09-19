@@ -12,6 +12,17 @@ async fn login_rate_limit_ignores_spoofed_forwarding_from_untrusted_peers() {
     let storage = SharedStorage::connect(&config.shared_storage)
         .await
         .unwrap();
+    // A different settings record must not relax the security proxy policy.
+    storage
+        .insert_one(
+            "settings",
+            json!({
+                "type": "unrelated", "trust_x_forwarded_for": true,
+                "xff_trusted_proxies": []
+            }),
+        )
+        .await
+        .unwrap();
     storage
         .insert_one(
             "settings",

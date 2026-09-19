@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
+import DOMPurify from 'dompurify'
 
 function escapeHtml(s: string): string {
   return s
@@ -225,7 +226,7 @@ export default function MarkdownViewer({ src, searchTerm }: { src: string; searc
   return (
     <div className="grid grid-cols-1 md:grid-cols-[1fr_240px] gap-6">
       <div className="markdown max-w-none">
-        <div dangerouslySetInnerHTML={{ __html: html }} />
+        <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
       </div>
       <aside className="hidden md:block sticky top-16 h-max border-l border-gray-200 dark:border-white/10 pl-4">
         <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-white/50 mb-2">On this page</div>

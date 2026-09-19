@@ -74,8 +74,9 @@ LOCAL_HOST_IP_BYPASS=false         # Disable localhost bypass
 
 For memory-mode recovery rehearsal, set `MEM_DUMP_PATH` to a path inside the
 mounted persistent data volume (for example, `/app/data/memory_dump.bin`).
-Snapshots use timestamped filenames in that directory. Startup first selects
-the newest matching stem by file modification time, then falls back to the
+Snapshots use timestamped filenames in that directory. Startup uses the saved
+security settings file's `dump_path` when present, then selects
+the newest matching stem by file modification time and falls back to the
 default stem and finally any `.bin` file in the default directory, matching
 Python's startup search. It fails closed if the selected snapshot is corrupt.
 Use a filename stem such as `/app/data/memory_dump.bin` with timestamped files
@@ -936,14 +937,26 @@ Use `POST /platform/memory/dump` for an authenticated on-demand dump. A
 security-settings update immediately enables/disables or retimes autosave; the
 environment variables establish its startup defaults.
 
+When enabled at startup or by an accepted update, autosave writes a dump
+immediately before waiting for its interval. Disabled autosave stays disabled.
+Accepted security-settings updates also write a JSON mirror to
+`SECURITY_SETTINGS_FILE`; keep that path on a writable persistent volume.
+Writes use an atomic file replacement. As in Python, mirror failures are logged
+but do not undo the authoritative database update. In memory mode the file is
+a startup fallback only when no settings document was restored; MongoDB never
+loads settings from this file. This mirror is not a substitute for a full dump.
+
 **Automatic on shutdown:**
-- Graceful stop writes encrypted dump
-- Location: `$MEM_DUMP_PATH-YYYYMMDDTHHMMSSZ.bin`
+
+- SIGTERM or SIGINT drains active requests, stops snapshot workers, and writes an encrypted final dump, including writes completed during draining.
+- SIGUSR1 writes an on-demand dump without stopping the process. Autosave may remain disabled.
+- Both use the current security setting's `dump_path`; `MEM_DUMP_PATH` establishes its default. Timestamped snapshots go in that path's directory.
 
 **Restore:**
-- Place latest dump in `data/` directory
-- Rename to match `MEM_DUMP_PATH` without timestamp
-- Start gateway (auto-loads dump)
+
+- Keep the saved settings file and its snapshot directory on the persistent volume.
+- Start the gateway to load the latest timestamped dump before autosave starts.
+- A wrong-key or corrupt selected dump prevents startup and is left unchanged.
 
 ---
 

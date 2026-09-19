@@ -36,6 +36,11 @@ mod tests {
         assert!(enforce_group_access(&api, &user).is_ok());
 
         let user = json!({ "groups": ["admin"] });
-        assert!(enforce_group_access(&api, &user).is_err());
+        let failure = enforce_group_access(&api, &user).unwrap_err();
+        assert_eq!(failure.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            failure.error_code,
+            "You do not have the correct group for this"
+        );
     }
 }

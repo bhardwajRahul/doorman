@@ -117,4 +117,28 @@ mod tests {
         record_success(&circuits, "api");
         assert_eq!(circuits.lock().unwrap()["api"].state, CircuitState::Closed);
     }
+
+    #[test]
+    fn opens_after_failures_then_half_open_failure_reopens_like_python() {
+        let circuits = Mutex::new(HashMap::new());
+        for _ in 0..5 {
+            record_failure(&circuits, "api");
+        }
+        assert!(!check(&circuits, "api"));
+        assert_eq!(circuits.lock().unwrap()["api"].state, CircuitState::Open);
+
+        // Advance the open timestamp past the default timeout without making
+        // this policy regression wait for wall-clock time.
+        circuits.lock().unwrap().get_mut("api").unwrap().opened_at =
+            Some(Instant::now() - Duration::from_secs(31));
+        assert!(check(&circuits, "api"));
+        assert_eq!(
+            circuits.lock().unwrap()["api"].state,
+            CircuitState::HalfOpen
+        );
+
+        record_failure(&circuits, "api");
+        assert_eq!(circuits.lock().unwrap()["api"].state, CircuitState::Open);
+        assert!(!check(&circuits, "api"));
+    }
 }

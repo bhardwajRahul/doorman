@@ -137,6 +137,17 @@ mod tests {
         assert_eq!(decision.header_value, Some("system-key".to_owned()));
         assert_eq!(decision.user_header_value, Some("user-key".to_owned()));
     }
+
+    #[test]
+    fn public_credit_enabled_api_bypasses_credit_requirement_like_python() {
+        let api = json!({
+            "api_public": true,
+            "api_credits_enabled": true,
+            "api_credit_group": "public-ai",
+        });
+        let decision = evaluate_credits(&api, None, &[], &[]).unwrap();
+        assert_eq!(decision, CreditDecision::default());
+    }
 }
 
 #[test]

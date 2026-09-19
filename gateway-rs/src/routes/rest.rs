@@ -10,7 +10,7 @@ use axum::{
     extract::{ConnectInfo, OriginalUri, Request, State},
     response::{IntoResponse, Response},
 };
-use http::{HeaderMap, HeaderName, StatusCode, header};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use serde_json::Value;
 
 use crate::{
@@ -46,6 +46,18 @@ pub async fn rest_policy_then_proxy(
     State(state): State<AppState>,
     request: Request,
 ) -> Result<Response, GatewayError> {
+    if !matches!(
+        *request.method(),
+        http::Method::GET
+            | http::Method::POST
+            | http::Method::PUT
+            | http::Method::DELETE
+            | http::Method::HEAD
+            | http::Method::PATCH
+            | http::Method::OPTIONS
+    ) {
+        return Ok(StatusCode::METHOD_NOT_ALLOWED.into_response());
+    }
     let protocol = request
         .extensions()
         .get::<DataPlaneProtocol>()
@@ -147,7 +159,15 @@ pub async fn rest_policy_then_proxy(
     match result {
         Ok(Some(decision)) => {
             if request.method() == http::Method::OPTIONS {
-                return Ok(preflight_response(&decision, request.headers()));
+                let mut response = preflight_response(&decision, request.headers());
+                if protocol != DataPlaneProtocol::Rest
+                    && !cors_requested_headers_are_allowed(&decision, request.headers())
+                {
+                    response
+                        .headers_mut()
+                        .remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+                }
+                return Ok(response);
             }
             let origin = request
                 .headers()
@@ -182,6 +202,19 @@ pub async fn rest_policy_then_proxy(
         )
             .into_response()),
         Err(failure) => {
+            if request.method() == http::Method::OPTIONS
+                && std::env::var("STRICT_OPTIONS_405")
+                    .ok()
+                    .is_some_and(|value| {
+                        matches!(
+                            value.to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        )
+                    })
+                && failure.error_code == "GTW003"
+            {
+                return Ok(StatusCode::METHOD_NOT_ALLOWED.into_response());
+            }
             if let Some(tier_limit) = failure.tier_limit {
                 let (body, status) = *tier_limit;
                 let mut response = (failure.status, Json(body)).into_response();
@@ -207,6 +240,27 @@ fn protocol_name(protocol: DataPlaneProtocol) -> &'static str {
         DataPlaneProtocol::Soap => "soap",
         DataPlaneProtocol::Grpc | DataPlaneProtocol::GrpcWeb => "grpc",
     }
+}
+
+fn cors_requested_headers_are_allowed(
+    decision: &crate::policy::PolicyDecision,
+    request_headers: &HeaderMap,
+) -> bool {
+    let Some(requested) = request_headers
+        .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return true;
+    };
+    let Some(allowed) = decision.cors_allow_headers.as_deref() else {
+        return true;
+    };
+    allowed.iter().any(|value| value.trim() == "*")
+        || requested.split(',').map(str::trim).all(|header| {
+            allowed
+                .iter()
+                .any(|allowed| allowed.trim().eq_ignore_ascii_case(header))
+        })
 }
 
 fn apply_tier_headers(
@@ -297,8 +351,8 @@ async fn execute_rest(
         Err(_) => {
             return Ok(policy_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "GTW013",
-                "Request body too large",
+                "REQ001",
+                &format!("Request entity too large (max: {body_limit} bytes)"),
             ));
         }
     };
@@ -377,9 +431,12 @@ async fn execute_rest(
             );
         if (always_forward || protocol_default || allowed.iter().any(|item| item == &lower))
             && !is_hop_by_hop(name)
+            && !is_sensitive_forward_header(name)
             && name != header::HOST
         {
-            headers.append(name.clone(), value.clone());
+            if let Some(value) = sanitize_forwarded_header_value(value) {
+                headers.append(name.clone(), value);
+            }
         }
     }
     if let Some(source_name) = decision
@@ -569,6 +626,16 @@ async fn execute_rest(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.to_ascii_lowercase().contains("application/json"));
+    if protocol == DataPlaneProtocol::Rest
+        && is_json
+        && serde_json::from_slice::<Value>(&bytes).is_err()
+    {
+        return Ok(policy_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "GTW006",
+            "Invalid JSON response from upstream",
+        ));
+    }
     let upstream_content_type = upstream_headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -643,18 +710,14 @@ async fn execute_crud(
     let request_path = request.uri().path().to_owned();
     let resource_id = crud_resource_id(&request_path).map(str::to_owned);
     let (_, body) = request.into_parts();
-    let body = match to_bytes(
-        body,
-        BodyLimits::for_path(&request_path, BodyLimits::from_env().rest),
-    )
-    .await
-    {
+    let body_limit = BodyLimits::from_env().rest;
+    let body = match to_bytes(body, BodyLimits::for_path(&request_path, body_limit)).await {
         Ok(body) => body,
         Err(_) => {
             return Ok(policy_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "GTW013",
-                "Request body too large",
+                "REQ001",
+                &format!("Request entity too large (max: {body_limit} bytes)"),
             ));
         }
     };
@@ -1137,6 +1200,39 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
     )
 }
 
+fn is_sensitive_forward_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str().to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "www-authenticate"
+            | "x-api-key"
+            | "api-key"
+            | "cookie"
+            | "set-cookie"
+            | "x-csrf-token"
+            | "csrf-token"
+    )
+}
+
+/// Matches Python's gateway header sanitizer for values that are safe to
+/// forward: remove line/control separators and complete HTML-like tags.
+fn sanitize_forwarded_header_value(value: &HeaderValue) -> Option<HeaderValue> {
+    let mut sanitized = value.to_str().ok()?.replace(['\n', '\r', '\0'], "");
+    while let Some(start) = sanitized.find('<') {
+        let Some(relative_end) = sanitized[start + 1..].find('>') else {
+            break;
+        };
+        let end = start + relative_end + 2;
+        sanitized.replace_range(start..end, "");
+    }
+    if sanitized.chars().count() > 8_192 {
+        sanitized = sanitized.chars().take(8_192).collect::<String>();
+        sanitized.push_str("...[TRUNCATED]");
+    }
+    HeaderValue::from_str(&sanitized).ok()
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1151,11 +1247,41 @@ mod tests {
     use http::{Method, Request};
     use serde_json::{Value, json};
 
+    #[test]
+    fn sanitizes_and_bounds_forwarded_header_values_like_python() {
+        let value = HeaderValue::from_static("abc<script>alert(1)</script>");
+        assert_eq!(
+            sanitize_forwarded_header_value(&value)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "abcalert(1)"
+        );
+        let long = HeaderValue::from_str(&"a".repeat(8_193)).unwrap();
+        let sanitized = sanitize_forwarded_header_value(&long).unwrap();
+        assert_eq!(sanitized.as_bytes().len(), 8_206);
+        assert!(sanitized.to_str().unwrap().ends_with("...[TRUNCATED]"));
+    }
+
+    #[test]
+    fn sensitive_allowed_request_headers_are_never_forwarded() {
+        assert!(is_sensitive_forward_header(&HeaderName::from_static(
+            "authorization"
+        )));
+        assert!(is_sensitive_forward_header(&HeaderName::from_static(
+            "x-api-key"
+        )));
+        assert!(!is_sensitive_forward_header(&HeaderName::from_static(
+            "x-allowed"
+        )));
+    }
+
     #[tokio::test]
     async fn executes_selected_upstream_with_filtered_and_credit_headers() {
         async fn upstream(
             method: Method,
             headers: HeaderMap,
+            uri: http::Uri,
             body: axum::body::Bytes,
         ) -> (StatusCode, [(String, String); 1], Json<Value>) {
             (
@@ -1165,8 +1291,10 @@ mod tests {
                     "method": method.as_str(),
                     "body": String::from_utf8_lossy(&body),
                     "x-test": headers.get("x-test").and_then(|value| value.to_str().ok()),
+                    "x-secret": headers.get("x-secret").and_then(|value| value.to_str().ok()),
                     "x-api-key": headers.get("x-api-key").and_then(|value| value.to_str().ok()),
                     "x-user-email": headers.get("x-user-email").and_then(|value| value.to_str().ok()),
+                    "query": uri.query(),
                 })),
             )
         }
@@ -1183,7 +1311,7 @@ mod tests {
         let decision = crate::policy::PolicyDecision {
             upstream: Some(format!("http://{address}")),
             upstream_path: Some("/items".to_owned()),
-            allowed_headers: vec!["x-test".to_owned(), "x-upstream".to_owned()],
+            allowed_headers: vec!["X-Test".to_owned(), "x-upstream".to_owned()],
             username: Some("alice".to_owned()),
             credit_header_name: Some("x-api-key".to_owned()),
             credit_header_value: Some("system-key".to_owned()),
@@ -1193,14 +1321,14 @@ mod tests {
         };
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/api/rest/demo/v1/items")
+            .uri("/api/rest/demo/v1/items?foo=1&bar=2")
             .header("content-type", "application/json")
-            .header("x-test", "forwarded")
+            .header("x-test", "abc<script>alert(1)</script>")
             .header("x-secret", "dropped")
             .body(Body::from(r#"{"hello":"world"}"#))
             .unwrap();
 
-        let response = execute_rest(&state, request, decision, DataPlaneProtocol::Rest)
+        let response = execute_rest(&state, request, decision.clone(), DataPlaneProtocol::Rest)
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -1208,22 +1336,221 @@ mod tests {
         let body: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
         assert_eq!(body["method"], "POST");
-        assert_eq!(body["x-test"], "forwarded");
+        assert_eq!(body["x-test"], "abcalert(1)");
+        assert!(body["x-secret"].is_null());
         assert_eq!(body["x-api-key"], "user-key");
         assert_eq!(body["x-user-email"], "alice");
+        assert_eq!(body["query"], "foo=1&bar=2");
         assert_eq!(body["body"], r#"{"hello":"world"}"#);
+
+        let text_response = execute_rest(
+            &state,
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/rest/demo/v1/items")
+                .header("content-type", "text/plain")
+                .body(Body::from("hello-world"))
+                .unwrap(),
+            decision,
+            DataPlaneProtocol::Rest,
+        )
+        .await
+        .unwrap();
+        assert_eq!(text_response.status(), StatusCode::CREATED);
+        let text_body: Value =
+            serde_json::from_slice(&to_bytes(text_response.into_body(), 4096).await.unwrap())
+                .unwrap();
+        assert_eq!(text_body["body"], "hello-world");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maps_upstream_not_found_to_python_gateway_error() {
+        async fn upstream_not_found() -> StatusCode {
+            StatusCode::NOT_FOUND
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/missing", any(upstream_not_found)),
+            )
+            .await
+            .unwrap();
+        });
+        let state =
+            AppState::new(crate::Config::for_test("http://127.0.0.1:9".to_owned())).unwrap();
+        let decision = crate::policy::PolicyDecision {
+            upstream: Some(format!("http://{address}")),
+            upstream_path: Some("/missing".to_owned()),
+            request_timeout_ms: 1_000,
+            ..Default::default()
+        };
+        let request = Request::builder()
+            .uri("/api/rest/demo/v1/missing")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = execute_rest(&state, request, decision, DataPlaneProtocol::Rest)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["error_code"], "GTW005");
+        assert_eq!(
+            body["error_message"],
+            "Endpoint does not exist in backend service"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_json_from_rest_upstream_like_python() {
+        async fn malformed_json() -> ([(http::HeaderName, &'static str); 1], &'static str) {
+            ([(header::CONTENT_TYPE, "application/json")], r#"{"x": 1"#)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/invalid-json", any(malformed_json)),
+            )
+            .await
+            .unwrap();
+        });
+        let state =
+            AppState::new(crate::Config::for_test("http://127.0.0.1:9".to_owned())).unwrap();
+        let response = execute_rest(
+            &state,
+            Request::builder()
+                .uri("/api/rest/demo/v1/invalid-json")
+                .body(Body::empty())
+                .unwrap(),
+            crate::policy::PolicyDecision {
+                upstream: Some(format!("http://{address}")),
+                upstream_path: Some("/invalid-json".to_owned()),
+                request_timeout_ms: 1_000,
+                ..Default::default()
+            },
+            DataPlaneProtocol::Rest,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["error_code"], "GTW006");
+        assert_eq!(body["error_message"], "Invalid JSON response from upstream");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn authorization_field_swap_matches_python_empty_and_missing_cases() {
+        async fn upstream(headers: HeaderMap) -> Json<Value> {
+            Json(json!({
+                "authorization": headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok()),
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/auth", any(upstream)))
+                .await
+                .unwrap();
+        });
+        let state =
+            AppState::new(crate::Config::for_test("http://127.0.0.1:9".to_owned())).unwrap();
+        let send = |headers: Vec<(String, String)>| {
+            let state = state.clone();
+            async move {
+                let mut request = Request::builder()
+                    .uri("/api/rest/demo/v1/auth")
+                    .body(Body::empty())
+                    .unwrap();
+                for (name, value) in headers {
+                    request.headers_mut().insert(
+                        HeaderName::try_from(name).unwrap(),
+                        HeaderValue::try_from(value).unwrap(),
+                    );
+                }
+                let response = execute_rest(
+                    &state,
+                    request,
+                    crate::policy::PolicyDecision {
+                        upstream: Some(format!("http://{address}")),
+                        upstream_path: Some("/auth".to_owned()),
+                        allowed_headers: vec!["x-backend-auth".to_owned()],
+                        authorization_field_swap: Some("x-backend-auth".to_owned()),
+                        request_timeout_ms: 1_000,
+                        ..Default::default()
+                    },
+                    DataPlaneProtocol::Rest,
+                )
+                .await
+                .unwrap();
+                serde_json::from_slice::<Value>(
+                    &to_bytes(response.into_body(), 4096).await.unwrap(),
+                )
+                .unwrap()
+            }
+        };
+
+        assert_eq!(
+            send(vec![(
+                "x-backend-auth".to_owned(),
+                "Bearer backend-token".to_owned(),
+            )])
+            .await["authorization"],
+            "Bearer backend-token"
+        );
+        assert!(send(vec![]).await["authorization"].is_null());
+        assert_eq!(
+            send(vec![
+                ("x-backend-auth".to_owned(), String::new()),
+                ("authorization".to_owned(), "Bearer existing".to_owned()),
+            ])
+            .await["authorization"],
+            "Bearer existing"
+        );
         server.abort();
     }
 
     #[tokio::test]
     async fn retries_transient_upstream_statuses() {
         use std::sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         };
 
-        async fn flaky(State(attempts): State<Arc<AtomicUsize>>) -> (StatusCode, Json<Value>) {
-            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        type ForwardedRequest = (Option<String>, Option<String>);
+
+        #[derive(Clone)]
+        struct RetryCapture {
+            attempts: Arc<AtomicUsize>,
+            requests: Arc<Mutex<Vec<ForwardedRequest>>>,
+        }
+
+        async fn flaky(
+            State(capture): State<RetryCapture>,
+            headers: HeaderMap,
+            uri: http::Uri,
+        ) -> (StatusCode, Json<Value>) {
+            capture.requests.lock().unwrap().push((
+                uri.query().map(str::to_owned),
+                headers
+                    .get("x-custom")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned),
+            ));
+            let attempt = capture.attempts.fetch_add(1, Ordering::SeqCst);
             if attempt == 0 {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -1234,16 +1561,19 @@ mod tests {
             }
         }
 
-        let attempts = Arc::new(AtomicUsize::new(0));
+        let capture = RetryCapture {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server_attempts = attempts.clone();
+        let server_capture = capture.clone();
         let server = tokio::spawn(async move {
             axum::serve(
                 listener,
                 Router::new()
                     .route("/retry", any(flaky))
-                    .with_state(server_attempts),
+                    .with_state(server_capture),
             )
             .await
             .unwrap();
@@ -1253,12 +1583,14 @@ mod tests {
         let decision = crate::policy::PolicyDecision {
             upstream: Some(format!("http://{address}")),
             upstream_path: Some("/retry".to_owned()),
+            allowed_headers: vec!["x-custom".to_owned()],
             retry_count: 1,
             request_timeout_ms: 1_000,
             ..Default::default()
         };
         let request = Request::builder()
-            .uri("/api/rest/demo/v1/retry")
+            .uri("/api/rest/demo/v1/retry?foo=bar")
+            .header("x-custom", "abc")
             .body(Body::empty())
             .unwrap();
 
@@ -1266,7 +1598,163 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(capture.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            capture.requests.lock().unwrap().as_slice(),
+            &[
+                (Some("foo=bar".to_owned()), Some("abc".to_owned())),
+                (Some("foo=bar".to_owned()), Some("abc".to_owned())),
+            ]
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn soap_retries_transient_upstream_statuses_like_python() {
+        use axum::extract::{Path, State};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        async fn flaky_soap(
+            State(attempts): State<Arc<AtomicUsize>>,
+            Path(status): Path<u16>,
+        ) -> Response {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Response::builder()
+                    .status(StatusCode::from_u16(status).unwrap())
+                    .body(Body::from("<retry/>"))
+                    .unwrap();
+            }
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "text/xml")
+                .body(Body::from("<ok/>"))
+                .unwrap()
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_attempts = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/{status}", any(flaky_soap))
+                    .with_state(server_attempts),
+            )
+            .await
+            .unwrap();
+        });
+        let state =
+            AppState::new(crate::Config::for_test("http://127.0.0.1:9".to_owned())).unwrap();
+
+        for status in [500, 502, 503, 504] {
+            attempts.store(0, Ordering::SeqCst);
+            let decision = crate::policy::PolicyDecision {
+                upstream: Some(format!("http://{address}")),
+                upstream_path: Some(format!("/{status}")),
+                retry_count: 1,
+                request_timeout_ms: 1_000,
+                ..Default::default()
+            };
+            let request = Request::builder()
+                .uri("/api/soap/demo/v1/call")
+                .method(Method::POST)
+                .header(http::header::CONTENT_TYPE, "application/xml")
+                .body(Body::from("<Envelope/>"))
+                .unwrap();
+            let response = execute_rest(&state, request, decision, DataPlaneProtocol::Soap)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "<ok/>");
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        }
+
+        attempts.store(0, Ordering::SeqCst);
+        let decision = crate::policy::PolicyDecision {
+            upstream: Some(format!("http://{address}")),
+            upstream_path: Some("/500".to_owned()),
+            retry_count: 0,
+            request_timeout_ms: 1_000,
+            ..Default::default()
+        };
+        let request = Request::builder()
+            .uri("/api/soap/demo/v1/call")
+            .method(Method::POST)
+            .body(Body::from("<Envelope/>"))
+            .unwrap();
+        let response = execute_rest(&state, request, decision, DataPlaneProtocol::Soap)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn soap_forwards_common_headers_without_an_allowlist_like_python() {
+        use axum::extract::State;
+        use std::sync::{Arc, Mutex};
+
+        async fn capture_soap_headers(
+            State(captured): State<Arc<Mutex<HeaderMap>>>,
+            headers: HeaderMap,
+        ) -> Response {
+            *captured.lock().unwrap() = headers;
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "text/xml")
+                .body(Body::from("<ok/>"))
+                .unwrap()
+        }
+
+        let captured = Arc::new(Mutex::new(HeaderMap::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_captured = captured.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/soap", any(capture_soap_headers))
+                    .with_state(server_captured),
+            )
+            .await
+            .unwrap();
+        });
+        let state =
+            AppState::new(crate::Config::for_test("http://127.0.0.1:9".to_owned())).unwrap();
+        let decision = crate::policy::PolicyDecision {
+            upstream: Some(format!("http://{address}")),
+            upstream_path: Some("/soap".to_owned()),
+            request_timeout_ms: 1_000,
+            ..Default::default()
+        };
+        let request = Request::builder()
+            .uri("/api/soap/demo/v1/call")
+            .method(Method::POST)
+            .header(http::header::CONTENT_TYPE, "application/xml")
+            .header(http::header::ACCEPT, "text/xml")
+            .header(http::header::USER_AGENT, "doorman-tests/1.0")
+            .body(Body::from("<Envelope/>"))
+            .unwrap();
+        let response = execute_rest(&state, request, decision, DataPlaneProtocol::Soap)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "<ok/>");
+        let headers = captured.lock().unwrap();
+        assert_eq!(
+            headers[http::header::CONTENT_TYPE],
+            "text/xml; charset=utf-8"
+        );
+        assert_eq!(headers[http::header::ACCEPT], "text/xml");
+        assert_eq!(headers[http::header::USER_AGENT], "doorman-tests/1.0");
+        assert_eq!(headers["soapaction"], "\"\"");
         server.abort();
     }
 
@@ -1330,6 +1818,59 @@ mod tests {
             validate_protocol_request(DataPlaneProtocol::Grpc, &Method::POST, invalid, 0, None)
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn blocks_invalid_payloads_for_every_gateway_protocol_like_python() {
+        use axum::body::to_bytes;
+
+        let state =
+            AppState::new(crate::Config::for_test("http://127.0.0.1:9".to_owned())).unwrap();
+        let cases = [
+            (
+                DataPlaneProtocol::Rest,
+                br#"{"user":{"name":"A"}}"#.as_slice(),
+                json!({"user.name": {"required": true, "type": "string", "min": 2}}),
+            ),
+            (
+                DataPlaneProtocol::Graphql,
+                br#"{"query":"mutation CreateUser($input: UserInput!){ createUser(input: $input){ id } }","variables":{"input":{"name":"A"}}}"#.as_slice(),
+                json!({"CreateUser.input.name": {"required": true, "type": "string", "min": 2}}),
+            ),
+            (
+                DataPlaneProtocol::Soap,
+                br#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><Request><name>A</name></Request></soap:Body></soap:Envelope>"#.as_slice(),
+                json!({"name": {"required": true, "type": "string", "min": 2}}),
+            ),
+            (
+                DataPlaneProtocol::Grpc,
+                br#"{"method":"Service.Method","message":{"user":{"name":"A"}}}"#.as_slice(),
+                json!({"user.name": {"required": true, "type": "string", "min": 2}}),
+            ),
+        ];
+
+        for (protocol, body, schema) in cases {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/api/test")
+                .body(Body::from(body.to_vec()))
+                .unwrap();
+            let decision = crate::policy::PolicyDecision {
+                upstream: Some("http://127.0.0.1:9".to_owned()),
+                endpoint_validation: Some(schema),
+                graphql_max_depth: 10,
+                ..Default::default()
+            };
+            let response = execute_rest(&state, request, decision, protocol)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap()["error_code"],
+                "GTW011"
+            );
+        }
     }
 
     #[test]

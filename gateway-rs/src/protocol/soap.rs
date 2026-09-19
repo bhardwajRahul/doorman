@@ -246,4 +246,20 @@ mod tests {
         );
         assert!(!headers.contains_key("soapaction"));
     }
+
+    #[test]
+    fn preserves_text_xml_and_common_soap_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/xml"));
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/xml"));
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static("doorman-tests/1.0"),
+        );
+        let _ = prepare_request(&mut headers, b"<Envelope/>".to_vec(), None, None);
+        assert_eq!(headers[header::CONTENT_TYPE], "text/xml");
+        assert_eq!(headers[header::ACCEPT], "text/xml");
+        assert_eq!(headers[header::USER_AGENT], "doorman-tests/1.0");
+        assert_eq!(headers["soapaction"], "\"\"");
+    }
 }

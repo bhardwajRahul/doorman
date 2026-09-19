@@ -738,6 +738,58 @@ impl SharedStorage {
             .map_err(Into::into)
     }
 
+    /// Replace a matching document while preserving its storage identity.
+    ///
+    /// Most platform mutations use `$set`-like merge semantics, but selected
+    /// Python services intentionally call MongoDB's `replace_one`; omitted
+    /// nullable fields must therefore be removed rather than retained.
+    pub async fn replace_one(
+        &self,
+        collection: &str,
+        filter: &Value,
+        mut replacement: Value,
+    ) -> Result<Option<Value>, StorageError> {
+        if let Some(memory) = &self.memory {
+            let mut collections = memory.collections.write().await;
+            let Some(item) = collections
+                .entry(collection.to_owned())
+                .or_default()
+                .iter_mut()
+                .find(|item| value_matches(item, filter))
+            else {
+                return Ok(None);
+            };
+            if replacement.get("_id").is_none() {
+                replacement["_id"] = item.get("_id").cloned().unwrap_or(Value::Null);
+            }
+            *item = replacement;
+            let result = item.clone();
+            memory.bump_revision();
+            self.invalidate_policy_cache().await;
+            return Ok(Some(result));
+        }
+        let filter_document = restored_document(filter)?;
+        let mut replacement_document = mongodb::bson::to_document(&replacement)?;
+        replacement_document.remove("_id");
+        let result = self
+            .mongo()?
+            .collection::<Document>(collection)
+            .replace_one(filter_document.clone(), replacement_document)
+            .await?;
+        if result.matched_count == 0 {
+            return Ok(None);
+        }
+        self.bump_policy_revision().await?;
+        self.invalidate_policy_cache().await;
+        self.mongo()?
+            .collection::<Document>(collection)
+            .find_one(filter_document)
+            .await?
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(Into::into)
+    }
+
     pub async fn delete_one(&self, collection: &str, filter: &Value) -> Result<bool, StorageError> {
         if let Some(memory) = &self.memory {
             let mut collections = memory.collections.write().await;

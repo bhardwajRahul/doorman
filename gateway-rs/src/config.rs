@@ -15,6 +15,7 @@ pub struct Config {
     pub compression_minimum_size: u16,
     pub strict_response_envelope: bool,
     pub logs_dir: Option<PathBuf>,
+    pub security_settings_file: Option<PathBuf>,
     pub shared_storage: SharedStorageConfig,
 }
 
@@ -177,11 +178,13 @@ impl Default for SharedStorageConfig {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
+        crate::python_scalar::integer_digit_limit()
+            .map_err(|message| ConfigError::InvalidConfiguration(message.to_owned()))?;
         let shared_storage = SharedStorageConfig::from_env()?;
         shared_storage.validate_required()?;
         validate_runtime_environment(&shared_storage)?;
 
-        let configured_compression_level = env_parse("COMPRESSION_LEVEL", 1_i32)?;
+        let configured_compression_level = env_parse("COMPRESSION_LEVEL", 6_i32)?;
         let compression_level = if (1..=9).contains(&configured_compression_level) {
             configured_compression_level
         } else {
@@ -213,6 +216,11 @@ impl Config {
                 path.exists().then_some(path)
             }),
             shared_storage,
+            security_settings_file: Some(
+                env::var("SECURITY_SETTINGS_FILE")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| PathBuf::from("generated/security_settings.json")),
+            ),
         })
     }
 
@@ -234,10 +242,12 @@ impl Config {
             https_only: false,
             content_security_policy: None,
             compression_enabled: true,
-            compression_level: 1,
+            compression_level: 6,
             compression_minimum_size: 500,
             strict_response_envelope: false,
             logs_dir: None,
+            // Tests opt into an isolated path when exercising file persistence.
+            security_settings_file: None,
             shared_storage: SharedStorageConfig::default(),
         }
     }
@@ -486,6 +496,47 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn set(values: &[(&'static str, &str)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(name, _)| (*name, std::env::var_os(name)))
+                .collect();
+            unsafe {
+                for (name, value) in values {
+                    std::env::set_var(name, value);
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            unsafe {
+                for (name, value) in self.0.drain(..) {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compression_defaults_match_python() {
+        let config = Config::for_test("http://127.0.0.1:9".to_owned());
+        assert!(config.compression_enabled);
+        assert_eq!(config.compression_level, 6);
+        assert_eq!(config.compression_minimum_size, 500);
+    }
 
     #[test]
     fn builds_python_compatible_storage_urls() {
@@ -554,5 +605,68 @@ mod tests {
             storage.validate_required(),
             Err(ConfigError::MissingEnv("JWT_SECRET_KEY or JWT_KEYS"))
         ));
+    }
+
+    #[test]
+    fn worker_safety_matches_python_for_memory_and_shared_storage() {
+        let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _environment = EnvRestore::set(&[
+            ("MEM_OR_EXTERNAL", "MEM"),
+            ("THREADS", "2"),
+            ("ENV", "development"),
+            ("DOORMAN_ADMIN_PASSWORD", "WorkerSafetyPassword123!"),
+        ]);
+
+        let memory = SharedStorageConfig::from_env().unwrap();
+        let error = validate_runtime_environment(&memory).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("MEM_OR_EXTERNAL=MEM requires THREADS=1")
+        );
+
+        unsafe { std::env::set_var("THREADS", "1") };
+        let single_memory = SharedStorageConfig::from_env().unwrap();
+        assert!(validate_runtime_environment(&single_memory).is_ok());
+
+        unsafe {
+            std::env::set_var("MEM_OR_EXTERNAL", "REDIS");
+            std::env::set_var("THREADS", "4");
+        }
+        let shared = SharedStorageConfig::from_env().unwrap();
+        assert!(validate_runtime_environment(&shared).is_ok());
+    }
+
+    #[test]
+    fn production_https_guard_rejects_insecure_and_accepts_complete_secure_config() {
+        let _lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _environment = EnvRestore::set(&[
+            ("ENV", "production"),
+            ("HTTPS_ONLY", "false"),
+            ("MEM_OR_EXTERNAL", "MEM"),
+            ("THREADS", "1"),
+            ("DOORMAN_ADMIN_PASSWORD", "ProductionAdminPassword123!"),
+            (
+                "MEM_ENCRYPTION_KEY",
+                "production-memory-key-with-at-least-32-characters",
+            ),
+            ("JWT_ISSUER", "doorman-production"),
+            ("JWT_AUDIENCE", "doorman-production-api"),
+            ("ALLOWED_ORIGINS", "https://console.example.test"),
+            ("CORS_STRICT", "true"),
+            ("LOCAL_HOST_IP_BYPASS", "false"),
+            ("DISCOVERY_ALLOWED_HOSTS", "api.example.test"),
+        ]);
+        let storage = SharedStorageConfig::from_env().unwrap();
+        let error = validate_runtime_environment(&storage).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("production requires HTTPS_ONLY=true")
+        );
+
+        unsafe { std::env::set_var("HTTPS_ONLY", "true") };
+        let storage = SharedStorageConfig::from_env().unwrap();
+        assert!(validate_runtime_environment(&storage).is_ok());
     }
 }

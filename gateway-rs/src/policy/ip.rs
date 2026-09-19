@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
@@ -141,12 +141,12 @@ fn ip_in_list(ip: IpAddr, patterns: &[String]) -> bool {
 }
 
 fn ip_matches(ip: IpAddr, pattern: &str) -> bool {
-    let pattern = pattern.trim();
+    let pattern = crate::python_scalar::strip(pattern);
     if pattern.is_empty() {
         return false;
     }
     if let Some((network, prefix)) = pattern.split_once('/') {
-        let Ok(prefix) = prefix.parse::<u8>() else {
+        let Some(prefix) = ip_prefix(network, prefix) else {
             return false;
         };
         return cidr_contains(ip, network, prefix);
@@ -154,6 +154,24 @@ fn ip_matches(ip: IpAddr, pattern: &str) -> bool {
     pattern
         .parse::<IpAddr>()
         .is_ok_and(|candidate| candidate == ip)
+}
+
+fn ip_prefix(network: &str, prefix: &str) -> Option<u8> {
+    // Python accepts only unsigned ASCII digits in a numeric CIDR prefix.
+    if !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return prefix.parse().ok();
+    }
+    // Dotted netmasks and hostmasks apply only to IPv4. Zero is the /0
+    // netmask; other masks beginning with zero bits are inverted hostmasks.
+    network.parse::<Ipv4Addr>().ok()?;
+    let mask = u32::from(prefix.parse::<Ipv4Addr>().ok()?);
+    let mask = if mask != 0 && mask & (1 << 31) == 0 {
+        !mask
+    } else {
+        mask
+    };
+    let bits = mask.leading_ones();
+    (bits + mask.trailing_zeros() == 32).then_some(bits as u8)
 }
 
 fn cidr_contains(ip: IpAddr, network: &str, prefix: u8) -> bool {
@@ -187,7 +205,6 @@ mod tests {
     use super::*;
     use http::HeaderValue;
     use serde_json::json;
-    use std::net::Ipv4Addr;
 
     #[test]
     fn localhost_host_header_cannot_bypass_an_ip_allowlist() {
@@ -260,6 +277,84 @@ mod tests {
             false,
             false,
         )
+    }
+
+    #[test]
+    fn python_ip_pattern_invalid_entries_never_allow_or_trust() {
+        let patterns = json!([
+            "",
+            "invalid-ip",
+            "True",
+            "120",
+            "1e-05",
+            "203.0.113.0/33",
+            "203.0.113.0/+24",
+            "203.0.113.0/٢٤",
+            "203.0.113.0/255.0.255.0",
+            "203.0.113.0/ 24"
+        ]);
+        let api = json!({"api_ip_mode": "whitelist", "api_ip_whitelist": patterns});
+        assert_eq!(
+            enforce_for(&api, "203.0.113.5").unwrap_err().error_code,
+            "API010"
+        );
+        let api = json!({"api_ip_blacklist": patterns});
+        assert!(enforce_for(&api, "203.0.113.5").is_ok());
+        let settings = json!({"xff_trusted_proxies": patterns});
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        let direct_ip = "203.0.113.5".parse().unwrap();
+        assert_eq!(
+            effective_client_ip_for_settings(Some(&settings), &headers, Some(direct_ip), true),
+            Some(direct_ip)
+        );
+    }
+
+    #[test]
+    fn python_ip_pattern_dotted_masks_and_whitespace_match_reference() {
+        for pattern in [
+            "203.0.113.8/255.255.255.0",
+            "203.0.113.8/0.0.0.255",
+            "\u{1c}203.0.113.8/24\u{1f}",
+        ] {
+            let api = json!({"api_ip_mode":"whitelist", "api_ip_whitelist":[pattern]});
+            assert!(enforce_for(&api, "203.0.113.5").is_ok(), "{pattern:?}");
+            assert!(enforce_for(&api, "203.0.114.5").is_err());
+            let api = json!({"api_ip_blacklist":[pattern]});
+            assert_eq!(
+                enforce_for(&api, "203.0.113.5").unwrap_err().error_code,
+                "API011"
+            );
+            assert!(enforce_for(&api, "203.0.114.5").is_ok());
+            let settings = json!({"xff_trusted_proxies":[pattern]});
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+            assert_eq!(
+                effective_client_ip_for_settings(
+                    Some(&settings),
+                    &headers,
+                    Some("203.0.113.5".parse().unwrap()),
+                    true
+                ),
+                Some("198.51.100.9".parse().unwrap())
+            );
+        }
+        assert!(ip_matches(
+            "203.0.113.5".parse().unwrap(),
+            "203.0.113.0/0.0.0.0"
+        ));
+        assert!(ip_matches(
+            "203.0.113.5".parse().unwrap(),
+            "203.0.113.5/255.255.255.255"
+        ));
+        assert!(!ip_matches(
+            "203.0.113.5".parse().unwrap(),
+            "203.0.113.6/255.255.255.255"
+        ));
+        assert!(!ip_matches(
+            "2001:db8::1".parse().unwrap(),
+            "2001:db8::/255.255.255.0"
+        ));
     }
 
     #[test]

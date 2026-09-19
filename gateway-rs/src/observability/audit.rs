@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use http::HeaderMap;
 
@@ -11,6 +12,33 @@ pub struct AuditEvent {
 
 const REDACTED: &str = "[REDACTED]";
 
+static SENSITIVE_LOG_HEADER: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-api_key|x-csrf-token)\s*:\s*[^;\r\n]*",
+    )
+    .expect("sensitive header expression is valid")
+});
+static SENSITIVE_LOG_ASSIGNMENT: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?i)\b(access[_-]?token|refresh[_-]?token|password|api[_-]?key)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s;,]+)"#,
+    )
+    .expect("sensitive assignment expression is valid")
+});
+static SENSITIVE_LOG_AUTH_SCHEME: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/-]+={0,2}")
+        .expect("sensitive authorization scheme expression is valid")
+});
+
+/// Sanitize a free-form log message before it reaches a non-structured sink.
+/// Structured audit records should use `redacted_headers` or `redacted_value` instead.
+pub fn redacted_log_message(raw: &str) -> String {
+    let headers = SENSITIVE_LOG_HEADER.replace_all(raw, "$1: [REDACTED]");
+    let assignments = SENSITIVE_LOG_ASSIGNMENT.replace_all(&headers, "$1=[REDACTED]");
+    SENSITIVE_LOG_AUTH_SCHEME
+        .replace_all(&assignments, "$1 [REDACTED]")
+        .into_owned()
+}
+
 /// Apply the same secret-name policy to nested structured log exports.
 pub fn redact_record(value: &mut serde_json::Value) {
     match value {
@@ -18,6 +46,10 @@ pub fn redact_record(value: &mut serde_json::Value) {
             for (name, value) in fields {
                 if is_sensitive_name(name) {
                     *value = serde_json::Value::String(REDACTED.to_owned());
+                } else if name == "message" {
+                    if let Some(message) = value.as_str() {
+                        *value = serde_json::Value::String(redacted_log_message(message));
+                    }
                 } else {
                     redact_record(value);
                 }
@@ -107,7 +139,7 @@ fn is_sensitive_name(name: &str) -> bool {
 mod tests {
     use http::{HeaderMap, HeaderValue, header};
 
-    use super::{REDACTED, redacted_headers, redacted_value};
+    use super::{REDACTED, redacted_headers, redacted_log_message, redacted_value};
 
     #[test]
     fn audit_header_redaction_never_exposes_credentials() {
@@ -131,5 +163,29 @@ mod tests {
         assert_eq!(redacted["x-password"], REDACTED);
         assert_eq!(redacted["x-request-id"], "safe-id");
         assert_eq!(redacted_value("token", "secret"), REDACTED);
+    }
+
+    #[test]
+    fn free_form_log_messages_redact_headers_and_assignments() {
+        let secret = "very-secret-value";
+        let message = format!(
+            "Authorization: Bearer {secret}; cookie: session={secret}; Set-Cookie: access_token_cookie={secret}; X-API-Key: {secret}; X-CSRF-Token: {secret}; password=\"{secret}\" access_token=\"{secret}\" refresh_token={secret}; Bearer {secret}; Basic {secret}"
+        );
+        let redacted = redacted_log_message(&message);
+        assert!(!redacted.contains(secret));
+        for expected in [
+            "Authorization: [REDACTED]",
+            "cookie: [REDACTED]",
+            "Set-Cookie: [REDACTED]",
+            "X-API-Key: [REDACTED]",
+            "X-CSRF-Token: [REDACTED]",
+            "password=[REDACTED]",
+            "access_token=[REDACTED]",
+            "refresh_token=[REDACTED]",
+            "Bearer [REDACTED]",
+            "Basic [REDACTED]",
+        ] {
+            assert!(redacted.contains(expected), "{redacted}");
+        }
     }
 }

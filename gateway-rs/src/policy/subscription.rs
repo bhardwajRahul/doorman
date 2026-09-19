@@ -55,8 +55,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn admin_bypasses_subscription_by_default() {
+    fn admin_requires_subscription_by_default() {
         let user = json!({ "username": "admin", "role": "admin" });
+        assert!(enforce_subscription("demo/v1", &user, &[], &[], true).is_err());
         assert!(enforce_subscription("demo/v1", &user, &[], &[], false).is_ok());
     }
 
@@ -65,6 +66,12 @@ mod tests {
         let user = json!({ "username": "alice", "role": "viewer" });
         let subscriptions = vec![json!({ "username": "alice", "apis": ["demo/v1"] })];
         assert!(enforce_subscription("demo/v1", &user, &[], &subscriptions, false).is_ok());
-        assert!(enforce_subscription("other/v1", &user, &[], &subscriptions, false).is_err());
+        let failure =
+            enforce_subscription("other/v1", &user, &[], &subscriptions, false).unwrap_err();
+        assert_eq!(failure.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            failure.error_code,
+            "You are not subscribed to this resource"
+        );
     }
 }

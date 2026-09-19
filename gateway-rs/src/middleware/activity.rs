@@ -238,7 +238,12 @@ async fn append_record(
         .append(true)
         .open(path)
         .await?;
-    file.write_all(&line).await
+    file.write_all(&line).await?;
+    // The activity middleware only returns the client response after this
+    // function completes. Explicitly flush Tokio's buffered file handle so a
+    // caller can immediately inspect the completed-request record instead of
+    // observing an occasionally empty, newly-created log file.
+    file.flush().await
 }
 
 async fn rotate(path: &Path) {

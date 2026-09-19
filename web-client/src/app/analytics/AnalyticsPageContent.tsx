@@ -234,24 +234,28 @@ export default function AnalyticsPageContent({ searchParams }: AnalyticsPageCont
   }
 
   // Format helpers
-  const formatNumber = (num: number): string => {
+  const formatNumber = (num: number | undefined | null): string => {
+    if (num === undefined || num === null) return '0'
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
     if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
     return num.toString()
   }
 
-  const formatBytes = (bytes: number): string => {
+  const formatBytes = (bytes: number | undefined | null): string => {
+    if (bytes === undefined || bytes === null) return '0 B'
     if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`
     if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(2)} MB`
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`
     return `${bytes} B`
   }
 
-  const formatMs = (ms: number): string => {
+  const formatMs = (ms: number | undefined | null): string => {
+    if (ms === undefined || ms === null) return '0.0ms'
     return `${ms.toFixed(1)}ms`
   }
 
-  const formatPercent = (rate: number): string => {
+  const formatPercent = (rate: number | undefined | null): string => {
+    if (rate === undefined || rate === null) return '0.00%'
     return `${(rate * 100).toFixed(2)}%`
   }
 
