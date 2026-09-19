@@ -870,6 +870,194 @@ async fn external_control_plane_collections_persist_mutations_across_reconnect()
     assert!(loaded.get("_id").is_none());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn external_role_change_prunes_incompatible_subscriptions_across_connections() {
+    if !enabled() {
+        eprintln!("set DOORMAN_EXTERNAL_STORAGE_TEST=1 to run external storage coverage");
+        return;
+    }
+
+    let mongo_port =
+        std::env::var("DOORMAN_TEST_MONGO_PORT").unwrap_or_else(|_| "27018".to_owned());
+    let redis_port =
+        std::env::var("DOORMAN_TEST_REDIS_PORT").unwrap_or_else(|_| "16379".to_owned());
+    let nonce = Uuid::new_v4().simple().to_string();
+    let storage_config = SharedStorageConfig {
+        storage_mode: "REDIS".to_owned(),
+        mongo_uri_override: Some(format!("mongodb://127.0.0.1:{mongo_port}/?replicaSet=rs0")),
+        mongo_database: format!("doorman_external_role_change_{nonce}"),
+        redis_host: "127.0.0.1".to_owned(),
+        redis_port: redis_port.parse().unwrap(),
+        redis_password: None,
+        ..Default::default()
+    };
+    let admin_username = format!("role-admin-{nonce}");
+    let target_username = format!("role-target-{nonce}");
+    let password = "ExternalRoleChangePassword123!";
+    let kept_api = format!("kept-role-api-{nonce}");
+    let removed_api = format!("removed-role-api-{nonce}");
+    let adjacent_api = format!("adjacent-role-api-{nonce}");
+
+    let first = SharedStorage::connect(&storage_config).await.unwrap();
+    let second = SharedStorage::connect(&storage_config).await.unwrap();
+    first
+        .insert_one("roles", json!({"role_name": "admin", "manage_users": true}))
+        .await
+        .unwrap();
+    first
+        .insert_one("roles", json!({"role_name": "former"}))
+        .await
+        .unwrap();
+    first
+        .insert_one("roles", json!({"role_name": "new"}))
+        .await
+        .unwrap();
+    first
+        .insert_one(
+            "users",
+            json!({
+                "username": admin_username,
+                "email": format!("{admin_username}@example.test"),
+                "password": bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap(),
+                "role": "admin",
+                "groups": ["ALL", "admin"],
+                "active": true,
+                "ui_access": true
+            }),
+        )
+        .await
+        .unwrap();
+    first
+        .insert_one(
+            "users",
+            json!({
+                "username": target_username,
+                "email": format!("{target_username}@example.test"),
+                "role": "former",
+                "groups": [],
+                "active": true
+            }),
+        )
+        .await
+        .unwrap();
+    first
+        .insert_one(
+            "apis",
+            json!({"api_name": kept_api, "api_version": "v1", "role": ["new"]}),
+        )
+        .await
+        .unwrap();
+    first
+        .insert_one(
+            "apis",
+            json!({"api_name": removed_api, "api_version": "v1", "role": ["former"]}),
+        )
+        .await
+        .unwrap();
+    first
+        .insert_one(
+            "apis",
+            json!({"api_name": adjacent_api, "api_version": "v1", "role": ["former"]}),
+        )
+        .await
+        .unwrap();
+    first
+        .insert_one(
+            "subscriptions",
+            json!({
+                "username": target_username,
+                "apis": [
+                    format!("{kept_api}/v1"),
+                    format!("{removed_api}/v1"),
+                    format!("{adjacent_api}/v1")
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Prime the second connection's policy cache before the first connection
+    // changes the role. The following request must invalidate that cache and
+    // persist the subscription cleanup for independent readers.
+    assert_eq!(
+        second
+            .load_policy_documents()
+            .await
+            .unwrap()
+            .users
+            .iter()
+            .find(|user| user["username"] == target_username)
+            .unwrap()["role"],
+        "former"
+    );
+
+    let mut first_config = Config::for_test("removed-internal-backend".to_owned());
+    first_config.shared_storage = storage_config;
+    let mut first_state = AppState::new(first_config).unwrap();
+    first_state.storage = Some(Arc::new(first));
+    let first_app = build_router(first_state);
+    let login = first_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/platform/authorization")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": format!("{admin_username}@example.test"),
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap().to_owned())
+        .find(|value| value.starts_with("access_token_cookie="))
+        .unwrap();
+    let updated = first_app
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/platform/user/{target_username}"))
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"role": "new"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let documents = second.load_policy_documents().await.unwrap();
+    assert_eq!(
+        documents
+            .users
+            .iter()
+            .find(|user| user["username"] == target_username)
+            .unwrap()["role"],
+        "new"
+    );
+    let subscription = second
+        .find_one("subscriptions", &json!({"username": target_username}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        subscription["apis"],
+        json!([format!("{kept_api}/v1"), format!("{adjacent_api}/v1")])
+    );
+}
+
 #[tokio::test]
 async fn external_concurrent_policy_state_is_atomic_and_invalidates_across_instances() {
     if !enabled() {

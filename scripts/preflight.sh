@@ -60,6 +60,14 @@ fi
 
 ts() { date +%s; }
 
+# The fresh memory-mode administrator is intentionally seeded with a
+# one-request-per-second gateway policy. Keep successive data-plane smoke
+# probes in distinct windows so this script verifies the protocols rather than
+# accidentally testing that policy's 429 response.
+wait_for_gateway_policy_window() {
+  sleep 2
+}
+
 # Helper to create minimal API and endpoint and subscribe admin
 create_api_and_endpoint() {
   local api_name=$1 ver=$2 method=$3 uri=$4 upstream=$5 api_type=${6:-REST}
@@ -92,6 +100,7 @@ if [[ -n "$REST_UP" ]]; then
   curl -fsS -b "$COOKIE_JAR" "$BASE_URL/api/rest/$name/$ver/get" >/dev/null
   delete_api_and_endpoint "$name" "$ver" GET "/get"
   note_pass
+  wait_for_gateway_policy_window
 else
   echo "[5/8] REST gateway smoke skipped (set SMOKE_REST_UPSTREAM)"
 fi
@@ -106,6 +115,7 @@ if [[ -n "$GQL_UP" ]]; then
     "$BASE_URL/api/graphql/$name" >/dev/null
   delete_api_and_endpoint "$name" "$ver" POST "/graphql"
   note_pass
+  wait_for_gateway_policy_window
 else
   echo "[6/8] GraphQL gateway smoke skipped (set SMOKE_GQL_UPSTREAM)"
 fi

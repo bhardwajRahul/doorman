@@ -68,7 +68,7 @@ pub async fn execute_json_gateway(
         Err(GrpcGatewayError::Transport(message)) => {
             tracing::error!(error = %message, "native gRPC transport failed");
             policy_error(
-                StatusCode::BAD_GATEWAY,
+                StatusCode::SERVICE_UNAVAILABLE,
                 "GTW006",
                 "Upstream gRPC service unavailable",
             )
@@ -794,6 +794,7 @@ fn grpc_status_response(status: Status) -> Response {
         tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
         tonic::Code::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
+        tonic::Code::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_GATEWAY,
     };
     policy_error(http, "GTW006", status.message())
@@ -935,6 +936,38 @@ mod tests {
         );
         assert!(valid_package("acme.customer_v1"));
         assert!(!valid_package("acme/customer"));
+    }
+
+    #[tokio::test]
+    async fn unreachable_secure_grpc_transport_maps_to_python_503() {
+        use axum::body::to_bytes;
+
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some("grpcs://127.0.0.1:9".to_owned()),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            request_timeout_ms: 100,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["error_code"],
+            "GTW006"
+        );
     }
 
     #[tokio::test]
@@ -1097,6 +1130,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_and_descriptor_packages_resolve_dynamic_grpc_without_api_override() {
+        use axum::{Router, body::to_bytes, routing::post};
+
+        async fn echo(request: axum::extract::Request) -> Response {
+            let body = to_bytes(request.into_body(), 1024).await.unwrap();
+            let payload = decode_web_data_frame(&body).unwrap();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "0")
+                .body(Body::from(web_data_frame(&payload)))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/acme.Echo/Echo", post(echo)))
+                .await
+                .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        for body in [
+            br#"{"method":"Echo.Echo","package":"acme","message":{"message":"request-package"}}"#
+                .as_slice(),
+            br#"{"method":"Echo.Echo","message":{"message":"descriptor-package"}}"#.as_slice(),
+        ] {
+            let response = execute_json_gateway(&state, &decision, &HeaderMap::new(), body).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert!(
+                serde_json::from_slice::<Value>(&body).unwrap()["message"]
+                    .as_str()
+                    .is_some_and(|message| message.ends_with("package"))
+            );
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_grpc_retries_exhaustion_maps_to_python_503() {
+        use axum::{Router, body::to_bytes, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        async fn unavailable() -> Response {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "14")
+                .header("grpc-message", "still unavailable")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        CALLS.store(0, Ordering::SeqCst);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/acme.Echo/Echo", post(unavailable))
+                    .route("/Echo/Echo", post(unavailable)),
+            )
+            .await
+            .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            retry_count: 2,
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["error_code"],
+            "GTW006"
+        );
+        // Three configured attempts plus the compatibility-path attempt.
+        assert_eq!(CALLS.load(Ordering::SeqCst), 4);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn falls_back_to_unqualified_grpc_method_path_like_python() {
         use axum::{Router, body::to_bytes, routing::post};
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1168,6 +1315,82 @@ mod tests {
             serde_json::json!({"message":"hello"})
         );
         assert_eq!(PRIMARY_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(FALLBACK_CALLS.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unavailable_then_unimplemented_succeeds_via_unqualified_fallback() {
+        use axum::{Router, body::to_bytes, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static PRIMARY_CALLS: AtomicUsize = AtomicUsize::new(0);
+        static FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        async fn qualified() -> Response {
+            let status = if PRIMARY_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                "14"
+            } else {
+                "12"
+            };
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", status)
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        async fn unqualified(request: axum::extract::Request) -> Response {
+            FALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
+            let body = to_bytes(request.into_body(), 1024).await.unwrap();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "application/grpc")
+                .header("grpc-status", "0")
+                .body(Body::from(web_data_frame(
+                    &decode_web_data_frame(&body).unwrap(),
+                )))
+                .unwrap()
+        }
+
+        PRIMARY_CALLS.store(0, Ordering::SeqCst);
+        FALLBACK_CALLS.store(0, Ordering::SeqCst);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/acme.Echo/Echo", post(qualified))
+                    .route("/Echo/Echo", post(unqualified)),
+            )
+            .await
+            .unwrap();
+        });
+        let state = AppState::new(crate::config::Config::for_test(
+            "http://127.0.0.1:9".to_owned(),
+        ))
+        .unwrap();
+        let decision = PolicyDecision {
+            upstream: Some(format!("grpc://{address}")),
+            grpc_descriptor_set: Some(
+                base64::engine::general_purpose::STANDARD.encode(unary_echo_descriptor("acme")),
+            ),
+            grpc_package: Some("acme".to_owned()),
+            retry_count: 1,
+            request_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let response = execute_json_gateway(
+            &state,
+            &decision,
+            &HeaderMap::new(),
+            br#"{"method":"Echo.Echo","message":{"message":"hello"}}"#,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(PRIMARY_CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(FALLBACK_CALLS.load(Ordering::SeqCst), 1);
         server.abort();
     }

@@ -108,8 +108,10 @@ fn set_body_length(headers: &mut http::HeaderMap, length: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::is_message_payload_bytes;
+    use super::*;
+    use axum::{Json, Router, body::to_bytes, middleware, routing::post};
     use serde_json::json;
+    use tower::ServiceExt;
 
     #[test]
     fn only_plain_message_payloads_use_message_envelope() {
@@ -122,5 +124,41 @@ mod tests {
         assert!(!is_message_payload_bytes(
             json!({"ok": true}).to_string().as_bytes()
         ));
+    }
+
+    #[tokio::test]
+    async fn grpc_paths_use_loose_or_strict_json_envelope_like_python() {
+        async fn grpc_gateway_stub() -> Json<Value> {
+            Json(json!({"ok": true}))
+        }
+
+        for strict in [false, true] {
+            let mut config = crate::Config::for_test("http://127.0.0.1:9".to_owned());
+            config.strict_response_envelope = strict;
+            let state = AppState::new(config).unwrap();
+            let app = Router::new()
+                .route("/api/grpc/envgrpc", post(grpc_gateway_stub))
+                .layer(middleware::from_fn_with_state(state, response_compat));
+            let response = app
+                .oneshot(
+                    http::Request::builder()
+                        .method(http::Method::POST)
+                        .uri("/api/grpc/envgrpc")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1024).await.unwrap())
+                    .unwrap();
+            if strict {
+                assert_eq!(body["status_code"], 200);
+                assert_eq!(body["response"], json!({"ok": true}));
+            } else {
+                assert_eq!(body, json!({"ok": true}));
+            }
+        }
     }
 }

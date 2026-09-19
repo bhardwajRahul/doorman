@@ -2,6 +2,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::storage::cache::WindowCounter;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuotaPolicy {
     pub quota_id: String,
@@ -74,6 +76,24 @@ pub fn quota_counter_key(user_id: &str, quota_id: &str, window_index: u64) -> St
     format!("quota:{quota_id}:{user_id}:{window_index}")
 }
 
+/// Atomically records quota use for the current period and returns the new
+/// usage. The counter is shared by all in-process gateway requests.
+pub fn increment_quota(
+    counter: &WindowCounter,
+    user_id: &str,
+    quota_id: &str,
+    period_seconds: u64,
+    now_seconds: u64,
+) -> u64 {
+    let period = period_seconds.max(1);
+    let window_index = now_seconds / period;
+    counter.incr(
+        &quota_counter_key(user_id, quota_id, window_index),
+        period.saturating_mul(2),
+        now_seconds,
+    )
+}
+
 pub fn check_quota(
     current_usage: u64,
     request_increment: u64,
@@ -118,5 +138,13 @@ mod tests {
         assert!(exhausted.is_exhausted);
         assert!(!exhausted.allowed);
         assert_eq!(exhausted.remaining, 0);
+    }
+
+    #[test]
+    fn quota_increment_is_atomic_and_scoped_to_its_period() {
+        let counter = WindowCounter::default();
+        assert_eq!(increment_quota(&counter, "alice", "requests", 60, 60), 1);
+        assert_eq!(increment_quota(&counter, "alice", "requests", 60, 61), 2);
+        assert_eq!(increment_quota(&counter, "alice", "requests", 60, 120), 1);
     }
 }

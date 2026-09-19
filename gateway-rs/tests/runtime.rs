@@ -896,6 +896,20 @@ async fn rest_body_limit_matches_python_configured_boundary_contract() {
                         "client_uri": "/items",
                         "endpoint_uri": "/items",
                     }),
+                    json!({
+                        "api_name": "limited-boundary",
+                        "api_version": "v1",
+                        "endpoint_method": "POST",
+                        "client_uri": "/soap",
+                        "endpoint_uri": "/items",
+                    }),
+                    json!({
+                        "api_name": "limited-boundary",
+                        "api_version": "v1",
+                        "endpoint_method": "POST",
+                        "client_uri": "/graphql",
+                        "endpoint_uri": "/items",
+                    }),
                 ],
                 ..Default::default()
             });
@@ -921,6 +935,25 @@ async fn rest_body_limit_matches_python_configured_boundary_contract() {
             "Request entity too large (max: 10 bytes)"
         );
 
+        let spoofed_chunked = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/rest/limited-boundary/v1/items")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::TRANSFER_ENCODING, "chunked")
+                    .header(header::CONTENT_LENGTH, "5")
+                    .body(Body::from("12345678901"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spoofed_chunked.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let spoofed_body: Value =
+            serde_json::from_slice(&to_bytes(spoofed_chunked.into_body(), 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(spoofed_body["error_code"], "REQ001");
+
         let at_limit = build_router(state.clone())
             .oneshot(
                 Request::builder()
@@ -934,6 +967,50 @@ async fn rest_body_limit_matches_python_configured_boundary_contract() {
             .await
             .unwrap();
         assert_eq!(at_limit.status(), StatusCode::OK);
+
+        let soap_within_protocol_limit = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/soap/limited-boundary/v1/soap")
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .header(header::TRANSFER_ENCODING, "chunked")
+                    .body(Body::from("<x>1234567890</x>"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            soap_within_protocol_limit.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+
+        let graphql_over_protocol_limit = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/graphql/limited-boundary")
+                    .header("x-api-version", "v1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::TRANSFER_ENCODING, "chunked")
+                    .body(Body::from("123456"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            graphql_over_protocol_limit.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &to_bytes(graphql_over_protocol_limit.into_body(), 1024)
+                    .await
+                    .unwrap()
+            )
+            .unwrap()["error_code"],
+            "REQ001"
+        );
 
         let no_content_length = build_router(state)
             .oneshot(
@@ -959,6 +1036,8 @@ async fn rest_body_limit_matches_python_configured_boundary_contract() {
         .env("DOORMAN_REST_BODY_LIMIT_CHILD", "1")
         .env("MAX_BODY_SIZE_BYTES", "10")
         .env_remove("MAX_BODY_SIZE_BYTES_REST")
+        .env("MAX_BODY_SIZE_BYTES_SOAP", "20")
+        .env("MAX_BODY_SIZE_BYTES_GRAPHQL", "5")
         .output()
         .unwrap();
     assert!(

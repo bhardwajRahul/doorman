@@ -162,7 +162,7 @@ fn effective_limits(
         .cloned()
 }
 
-fn assignment_is_effective(assignment: &Value, now_seconds: u64) -> bool {
+pub fn assignment_is_effective(assignment: &Value, now_seconds: u64) -> bool {
     let starts = timestamp_field(assignment.get("effective_from"));
     let ends = timestamp_field(assignment.get("effective_until"));
     starts.is_none_or(|start| now_seconds >= start) && ends.is_none_or(|end| now_seconds <= end)
@@ -177,7 +177,19 @@ fn timestamp_field(value: Option<&Value>) -> Option<u64> {
         return Some(value / if value > 10_000_000_000 { 1_000 } else { 1 });
     }
     if let Some(value) = value.as_str() {
-        return time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        let rfc3339 =
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .or_else(|_| {
+                    // TierService stores datetime.now().isoformat(), which is a
+                    // timezone-naive timestamp. The Python process compares it to
+                    // its local naive now; the gateway standardizes that persisted
+                    // representation as UTC for effective-assignment evaluation.
+                    time::OffsetDateTime::parse(
+                        &format!("{value}Z"),
+                        &time::format_description::well_known::Rfc3339,
+                    )
+                });
+        return rfc3339
             .ok()
             .and_then(|value| u64::try_from(value.unix_timestamp()).ok());
     }

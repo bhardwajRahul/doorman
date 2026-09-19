@@ -75,9 +75,10 @@ Shared mode uses MongoDB for durable configuration and Redis for caches, counter
 | `MEM_ENCRYPTION_KEY` | In memory mode | Encrypts automatic and manual DMP1 snapshots |
 | `MEM_DUMP_PATH` | No | Snapshot path hint; defaults to `data/memory_dump.bin` |
 | `NEXT_PUBLIC_GATEWAY_URL` | No | Browser gateway target; same-origin by default |
-| `DOORMAN_ALLOW_PUBLIC_REGISTRATION` | No | Enables unauthenticated account registration; defaults to `false` |
 
 Public protocol URLs and platform API request/response contracts remain unchanged. There is no legacy-process proxy or fallback in the runtime image.
+
+Unauthenticated self-registration is available at `/platform/authorization/register` and is protected by the configured registration IP rate limit.
 
 ## Repository structure
 
