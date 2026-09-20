@@ -30,42 +30,54 @@ export default function ConfirmModal({
   const [input, setInput] = useState('')
   useEffect(() => { if (!open) setInput('') }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !loading) {
+        onCancel()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [open, loading, onCancel])
+
   if (!open) return null
 
   const confirmDisabled = loading || (requireTextMatch ? input !== (requireTextMatch || '') : false)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onCancel}>
-      <div className="absolute inset-0 bg-black/50" />
-      <div className="relative max-w-md mx-auto bg-white dark:bg-dark-surface border border-gray-200 dark:border-white/[0.12] rounded-lg shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-white/[0.08] flex items-center justify-between">
-          <div className="text-[14px] font-medium text-gray-900 dark:text-white/90">{title}</div>
-          <button onClick={onCancel} className="text-gray-500 dark:text-white/60 hover:text-gray-700 dark:hover:text-white/80" aria-label="Close">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative max-w-md w-full bg-white border-[3px] border-signal-ink shadow-[6px_6px_0px_0px_rgba(25,32,28,1)]" onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b-[3px] border-signal-ink bg-signal-lime flex items-center justify-between">
+          <div className="text-sm font-mono font-bold uppercase tracking-wider text-signal-ink">{title}</div>
+          <button onClick={onCancel} className="text-signal-ink hover:text-signal-terra transition-colors" aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
           </button>
         </div>
-        <div className="p-4 space-y-3">
-          <div className="text-[13px] text-gray-700 dark:text-white/80">
+        <div className="p-5 space-y-4">
+          <div className="text-sm text-signal-ink">
             {message}
           </div>
           {typeof requireTextMatch === 'string' && (
             <div>
-              <div className="text-[12px] text-gray-600 dark:text-white/60 mb-2">Type <span className="font-medium">{requireTextMatch}</span> to confirm</div>
+              <div className="text-xs font-mono font-bold uppercase text-signal-mist mb-1.5">Type <span className="text-signal-ink underline font-extrabold">{requireTextMatch}</span> to confirm</div>
               <input
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                className="input w-full"
+                className="input w-full p-2"
                 placeholder={inputPlaceholder || 'Type to confirm'}
               />
             </div>
           )}
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button onClick={onCancel} disabled={loading} className="px-3 py-1.5 bg-transparent border border-gray-300 dark:border-white/[0.12] rounded-sm text-[12px] text-gray-700 dark:text-white/80 hover:bg-gray-50 dark:hover:bg-white/5">{cancelLabel}</button>
-            <button onClick={onConfirm} disabled={confirmDisabled} className={`px-3 py-1.5 rounded-sm text-[12px] font-medium ${confirmDisabled ? 'bg-gray-200 dark:bg-white/20 text-gray-500 dark:text-white/40 cursor-not-allowed' : 'bg-primary-600 dark:bg-[#e5e5e5] text-white dark:text-[#1a1a1a] hover:bg-primary-700 dark:hover:bg-white'}`}>{confirmLabel}</button>
+          <div className="flex items-center justify-end gap-2.5 pt-2">
+            <button onClick={onCancel} disabled={loading} className="signal-button btn-secondary text-xs">{cancelLabel}</button>
+            <button onClick={onConfirm} disabled={confirmDisabled} className="signal-button signal-button--danger text-xs">{confirmLabel}</button>
           </div>
         </div>
       </div>
     </div>
   )
 }
+

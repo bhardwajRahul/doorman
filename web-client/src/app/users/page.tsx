@@ -3,12 +3,20 @@ import { TableSkeleton } from '@/components/TableSkeleton'
 import toast from 'react-hot-toast'
 
 import React, { useState, useEffect } from 'react'
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Layout from '@/components/Layout'
 import Pagination from '@/components/Pagination'
+import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { SERVER_URL } from '@/utils/config'
-import { SignalRecordIcon } from '@/components/signal/Signal'
+import {
+  SignalEmptyState,
+  SignalPageHeader,
+  SignalPanel,
+  SignalPrimaryLink,
+  SignalRecordIcon,
+  SignalSearchInput,
+  SignalTable
+} from '@/components/signal/Signal'
 
 interface User {
   username: string
@@ -105,69 +113,59 @@ const UsersPage = () => {
   }
 
   return (
-    <Layout>
+    <ProtectedRoute requiredPermission="manage_users">
+      <Layout>
       <div className="space-y-6">
-        <div className="page-header">
-          <div>
-            <h1 className="page-title">Users</h1>
-            <p className="text-gray-600 dark:text-gray-400 mt-1">
-              Manage user accounts and permissions
-            </p>
-          </div>
-          <Link href="/users/add" className="btn btn-primary">
-            <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Add User
-          </Link>
-        </div>
+        <SignalPageHeader
+          kicker="Identity & Access"
+          title={<>User Accounts.</>}
+          description="Manage user authentication, role assignments, and gateway permissions."
+          actions={
+            <SignalPrimaryLink href="/users/add">
+              Add User
+            </SignalPrimaryLink>
+          }
+        />
 
-        <div className="card">
+        <SignalPanel tone="white" title="Search and Filters" kicker={`User Directory (Showing ${users.length} of ${allUsers.length})`}>
           <div className="flex flex-col sm:flex-row gap-4">
             <form onSubmit={handleSearch} className="flex-1">
-              <div className="relative">
-                <svg className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search users by username, email, or role..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
+              <SignalSearchInput
+                value={searchTerm}
+                onChange={(val) => {
+                  setSearchTerm(val)
+                  if (!val) setUsers(allUsers)
+                }}
+                onClear={() => setUsers(allUsers)}
+                placeholder="Search users by username, email, or role..."
+              />
             </form>
-
-
           </div>
-        </div>
-
+        </SignalPanel>
 
         {loading ? (
           <TableSkeleton />
         ) : (
           /* Users Table */
-          <div className="card">
-            <div className="overflow-x-auto">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th onClick={() => handleSort('username')} className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                      <div className="flex items-center gap-1">Username {sortBy === 'username' && (sortOrder === 'asc' ? '↑' : '↓')}</div>
-                    </th>
-                    <th onClick={() => handleSort('email')} className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                      <div className="flex items-center gap-1">Email {sortBy === 'email' && (sortOrder === 'asc' ? '↑' : '↓')}</div>
-                    </th>
-                    <th>Roles</th>
-                    <th onClick={() => handleSort('status')} className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                      <div className="flex items-center gap-1">Status {sortBy === 'status' && (sortOrder === 'asc' ? '↑' : '↓')}</div>
-                    </th>
-                    <th>Last Login</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
+          <SignalPanel tone="white" title="Registered Users" kicker={`Active Directory (${users.length})`}>
+            <SignalTable>
+              <thead>
+                <tr>
+                  <th onClick={() => handleSort('username')} className="cursor-pointer hover:bg-gray-800 transition-colors">
+                    <div className="flex items-center gap-1">Username {sortBy === 'username' && (sortOrder === 'asc' ? '▲' : '▼')}</div>
+                  </th>
+                  <th onClick={() => handleSort('email')} className="cursor-pointer hover:bg-gray-800 transition-colors">
+                    <div className="flex items-center gap-1">Email {sortBy === 'email' && (sortOrder === 'asc' ? '▲' : '▼')}</div>
+                  </th>
+                  <th>Roles</th>
+                  <th onClick={() => handleSort('status')} className="cursor-pointer hover:bg-gray-800 transition-colors">
+                    <div className="flex items-center gap-1">Status {sortBy === 'status' && (sortOrder === 'asc' ? '▲' : '▼')}</div>
+                  </th>
+                  <th>Last Login</th>
+                  <th className="w-12"></th>
+                </tr>
+              </thead>
+              <tbody>
                   {users.map((user) => (
                     <tr
                       key={user.username}
@@ -221,47 +219,33 @@ const UsersPage = () => {
                     </tr>
                   ))}
                 </tbody>
-              </table>
-            </div>
+              </SignalTable>
 
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              onPageChange={setPage}
-              onPageSizeChange={(s) => { setPageSize(s); setPage(1) }}
-              hasNext={hasNext}
-            />
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={(s) => { setPageSize(s); setPage(1) }}
+                hasNext={hasNext}
+              />
 
-            {users.length === 0 && !loading && (
-              <div className="text-center py-12">
-                <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
-                  <svg className="h-8 w-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No users found</h3>
-                <p className="text-gray-600 dark:text-gray-400 mb-4">
+              {users.length === 0 && !loading && (
+                <SignalEmptyState
+                  title="No Users Found"
+                  action={
+                    <SignalPrimaryLink href="/users/add">
+                      Add User
+                    </SignalPrimaryLink>
+                  }
+                >
                   {searchTerm ? 'Try adjusting your search terms.' : 'Get started by creating your first user account.'}
-                </p>
-                <div className="flex items-center justify-center gap-4">
-                  {searchTerm && (
-                    <button onClick={() => { setSearchTerm(''); setUsers(allUsers) }} className="btn btn-secondary">
-                      Clear Search
-                    </button>
-                  )}
-                  <Link href="/users/add" className="btn btn-primary">
-                    <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                    Add User
-                  </Link>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+                </SignalEmptyState>
+              )}
+            </SignalPanel>
+          )}
       </div>
     </Layout>
+  </ProtectedRoute>
   )
 }
 

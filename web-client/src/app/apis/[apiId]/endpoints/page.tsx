@@ -7,6 +7,17 @@ import Layout from '@/components/Layout'
 import { SERVER_URL } from '@/utils/config'
 import { getJson } from '@/utils/api'
 import ConfirmModal from '@/components/ConfirmModal'
+import {
+  SignalBreadcrumbs,
+  SignalCopyButton,
+  SignalEmptyState,
+  SignalMethodFilter,
+  SignalPageHeader,
+  SignalPanel,
+  SignalPrimaryLink,
+  SignalSearchInput,
+  SignalTable
+} from '@/components/signal/Signal'
 
 interface EndpointItem {
   api_name: string
@@ -248,14 +259,28 @@ export default function ApiEndpointsPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [deleteConfirmation, setDeleteConfirmation] = useState('')
   const [endpointToDelete, setEndpointToDelete] = useState<EndpointItem | null>(null)
+  const [methodFilter, setMethodFilter] = useState('ALL')
+
+  const methodCounts = useMemo(() => {
+    const counts: Record<string, number> = { ALL: allEndpoints.length }
+    for (const ep of allEndpoints) {
+      const m = ep.endpoint_method.toUpperCase()
+      counts[m] = (counts[m] || 0) + 1
+    }
+    return counts
+  }, [allEndpoints])
 
   const filtered = useMemo(() => {
-    const t = searchTerm.trim().toLowerCase()
     let list = allEndpoints
+    if (methodFilter !== 'ALL') {
+      list = list.filter(ep => ep.endpoint_method.toUpperCase() === methodFilter)
+    }
+    const t = searchTerm.trim().toLowerCase()
     if (t) {
       list = list.filter(ep =>
         ep.endpoint_method.toLowerCase().includes(t) ||
         ep.endpoint_uri.toLowerCase().includes(t) ||
+        (ep.client_uri || '').toLowerCase().includes(t) ||
         (ep.endpoint_description || '').toLowerCase().includes(t)
       )
     }
@@ -267,7 +292,7 @@ export default function ApiEndpointsPage() {
       return ac - bc
     })
     return sorted
-  }, [allEndpoints, searchTerm, sortBy])
+  }, [allEndpoints, searchTerm, sortBy, methodFilter])
 
   const deleteEndpoint = async (ep: EndpointItem) => {
     const k = keyFor(ep)
@@ -404,21 +429,29 @@ export default function ApiEndpointsPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="page-header">
-          <div>
-            <h1 className="page-title">Endpoints for {apiName}/{apiVersion}</h1>
-            <p className="text-gray-600 dark:text-gray-400 mt-1">Create, edit, and delete endpoints. Precedence: Routing (client-key) → Endpoint servers → API servers.</p>
-          </div>
-          <div className="flex gap-2">
-            <Link href={`/apis/${encodeURIComponent(apiId)}/endpoints/add`} className="btn btn-primary">
-              <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              Add Endpoint
-            </Link>
-            <Link href={`/apis/${encodeURIComponent(apiId)}`} className="btn btn-ghost">Back</Link>
-          </div>
-        </div>
+        <SignalBreadcrumbs
+          items={[
+            { label: 'APIs', href: '/apis' },
+            { label: `${apiName || 'API'} (${apiVersion || 'v1'})`, href: `/apis/${encodeURIComponent(apiId)}` },
+            { label: 'Endpoints' }
+          ]}
+        />
+
+        <SignalPageHeader
+          kicker="Route Policy"
+          title={<>Endpoints for {apiName}/{apiVersion}</>}
+          description="Create, edit, and delete endpoints. Precedence: Routing (client-key) → Endpoint servers → API servers."
+          actions={
+            <div className="flex gap-2">
+              <SignalPrimaryLink href={`/apis/${encodeURIComponent(apiId)}/endpoints/add`}>
+                Add Endpoint
+              </SignalPrimaryLink>
+              <Link href={`/apis/${encodeURIComponent(apiId)}`} className="signal-button btn-secondary">
+                Back to API
+              </Link>
+            </div>
+          }
+        />
 
         {success && (
           <div className="rounded-lg bg-success-50 border border-success-200 p-4 dark:bg-success-900/20 dark:border-success-800">
@@ -431,57 +464,74 @@ export default function ApiEndpointsPage() {
           </div>
         )}
 
-        <div className="card">
-          <div className="flex flex-col sm:flex-row gap-4">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-              }}
-              className="flex-1"
-            >
-              <div className="relative">
-                <svg className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search endpoints by method, URI, or description..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
-            </form>
+        <SignalPanel tone="white" title="Search and Filters" kicker="Route discovery">
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row gap-4">
+              <SignalSearchInput
+                value={searchTerm}
+                onChange={setSearchTerm}
+                placeholder="Search endpoints by method, URI, or description..."
+                className="flex-1"
+              />
 
-            <div className="flex gap-2">
-              <button onClick={() => setSortBy('method')} className={`btn ${sortBy === 'method' ? 'btn-primary' : 'btn-secondary'}`}>Method</button>
-              <button onClick={() => setSortBy('uri')} className={`btn ${sortBy === 'uri' ? 'btn-primary' : 'btn-secondary'}`}>URI</button>
-              <button onClick={() => setSortBy('servers')} className={`btn ${sortBy === 'servers' ? 'btn-primary' : 'btn-secondary'}`}>Servers</button>
+              <div className="flex gap-2">
+                <button onClick={() => setSortBy('method')} className={`signal-button text-xs ${sortBy === 'method' ? 'signal-button--primary' : 'btn-secondary'}`}>
+                  Method {sortBy === 'method' && '▲'}
+                </button>
+                <button onClick={() => setSortBy('uri')} className={`signal-button text-xs ${sortBy === 'uri' ? 'signal-button--primary' : 'btn-secondary'}`}>
+                  URI {sortBy === 'uri' && '▲'}
+                </button>
+                <button onClick={() => setSortBy('servers')} className={`signal-button text-xs ${sortBy === 'servers' ? 'signal-button--primary' : 'btn-secondary'}`}>
+                  Servers {sortBy === 'servers' && '▲'}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t-2 border-signal-ink">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs font-bold uppercase text-signal-mist">Filter Method:</span>
+                <SignalMethodFilter selected={methodFilter} onChange={setMethodFilter} counts={methodCounts} />
+              </div>
+              <div className="font-mono text-xs text-signal-mist uppercase font-bold">
+                Showing {filtered.length} of {allEndpoints.length} endpoints
+              </div>
             </div>
           </div>
-        </div>
+        </SignalPanel>
 
-        <div className="card">
-          <div className="overflow-x-auto">
-            <table className="table">
-              <thead>
+        <SignalPanel tone="white" title="Configured Endpoints" kicker={`Active Registry (${filtered.length})`}>
+          <SignalTable>
+            <thead>
+              <tr>
+                <th className="w-8"></th>
+                <th>Method</th>
+                <th>URI (Backend)</th>
+                <th>Client URI</th>
+                <th>Description</th>
+                <th>Routing</th>
+                <th>Servers</th>
+                <th className="w-28">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8} className="text-center py-8 font-mono text-sm text-signal-mist">Loading endpoints...</td></tr>
+              ) : filtered.length === 0 ? (
                 <tr>
-                  <th></th>
-                  <th>Method</th>
-                  <th>URI (Backend)</th>
-                  <th>Client URI</th>
-                  <th>Description</th>
-                  <th>Routing</th>
-                  <th>Servers</th>
-
+                  <td colSpan={8} className="p-0">
+                    <SignalEmptyState
+                      title="No Endpoints Found"
+                      action={
+                        <SignalPrimaryLink href={`/apis/${encodeURIComponent(apiId)}/endpoints/add`}>
+                          Add Endpoint
+                        </SignalPrimaryLink>
+                      }
+                    >
+                      {searchTerm || methodFilter !== 'ALL' ? 'Try adjusting your search terms or method filter.' : 'Get started by creating your first endpoint for this API.'}
+                    </SignalEmptyState>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={6} className="text-center py-8 text-gray-500">Loading endpoints...</td></tr>
-                ) : filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="text-center py-8 text-gray-500">No endpoints found.</td></tr>
-                ) : (
+              ) : (
                   filtered.map((ep) => {
                     const k = keyFor(ep)
                     const saving = !!working[k]
@@ -606,11 +656,18 @@ export default function ApiEndpointsPage() {
                           <td>
                             <span className="badge badge-secondary">{(ep.endpoint_servers || []).length}</span>
                           </td>
-
+                          <td>
+                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              <SignalCopyButton
+                                text={`curl -X ${ep.endpoint_method} "${typeof window !== 'undefined' ? window.location.origin : ''}${ep.client_uri || ep.endpoint_uri}"`}
+                                label="cURL"
+                              />
+                            </div>
+                          </td>
                         </tr>
                         {expandedKeys.has(k) && (
                           <tr>
-                            <td colSpan={6} className="p-0">
+                            <td colSpan={8} className="p-0">
                               <div className="bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
                                 <div className="p-4 space-y-3">
                                   <div className="flex items-center gap-3">
@@ -724,10 +781,9 @@ export default function ApiEndpointsPage() {
                   })
                 )}
               </tbody>
-            </table>
-          </div>
+            </SignalTable>
+          </SignalPanel>
         </div>
-      </div>
 
       <ConfirmModal
         open={!!showDeleteModal && !!endpointToDelete}

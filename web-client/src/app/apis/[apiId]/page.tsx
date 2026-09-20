@@ -12,6 +12,7 @@ import { SERVER_URL } from '@/utils/config'
 import InfoTooltip from '@/components/InfoTooltip'
 import FormHelp from '@/components/FormHelp'
 import SearchableSelect from '@/components/SearchableSelect'
+import { SignalBreadcrumbs, SignalCopyButton } from '@/components/signal/Signal'
 
 interface API {
   api_id: string
@@ -660,11 +661,22 @@ const ApiDetailPage = () => {
   return (
     <Layout>
       <div className="space-y-6">
+        <SignalBreadcrumbs
+          items={[
+            { label: 'APIs', href: '/apis' },
+            { label: `${api?.api_name || 'API'} (${api?.api_version || 'v1'})` }
+          ]}
+        />
         <div className="page-header">
           <div>
-            <h1 className="page-title">{api?.api_name || 'API Details'}</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="page-title">{api?.api_name || 'API Details'}</h1>
+              {api?.api_id && (
+                <SignalCopyButton text={String(api.api_id)} label="Copy ID" />
+              )}
+            </div>
             <p className="text-gray-600 dark:text-gray-400 mt-1">
-              Manage API configuration and settings
+              Version: <span className="font-mono font-bold text-signal-ink">{api?.api_version}</span> · Manage API configuration and settings
             </p>
           </div>
           <div className="signal-detail-actions flex gap-2">

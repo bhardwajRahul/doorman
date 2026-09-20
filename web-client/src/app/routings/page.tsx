@@ -5,8 +5,9 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Layout from '@/components/Layout'
 import Pagination from '@/components/Pagination'
+import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { SERVER_URL } from '@/utils/config'
-import { SignalRecordIcon } from '@/components/signal/Signal'
+import { SignalRecordIcon, SignalSecretMask } from '@/components/signal/Signal'
 
 interface Routing {
   routing_name: string
@@ -89,7 +90,8 @@ const RoutingsPage = () => {
   }
 
   return (
-    <Layout>
+    <ProtectedRoute requiredPermission="manage_routings">
+      <Layout>
       <div className="space-y-6">
         <div className="page-header">
           <div>
@@ -197,10 +199,8 @@ const RoutingsPage = () => {
                           </div>
                         </div>
                       </td>
-                      <td>
-                        <code className="text-sm bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded font-mono">
-                          {routing.client_key}
-                        </code>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <SignalSecretMask value={routing.client_key} />
                       </td>
                       <td>
                         <p className="text-sm text-gray-600 dark:text-gray-400 max-w-xs truncate">
@@ -256,6 +256,7 @@ const RoutingsPage = () => {
         )}
       </div>
     </Layout>
+  </ProtectedRoute>
   )
 }
 

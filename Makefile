@@ -6,7 +6,7 @@ ADMIN_PASSWORD ?= $(shell grep '^DOORMAN_ADMIN_PASSWORD=' .env 2>/dev/null | cut
 BASE_URL ?= http://localhost:$(PORT)
 GATEWAY_LOAD_BASE_URL ?= http://localhost:3001
 
-.PHONY: check test unit unitq rust-test rust-clippy rust-fmt-check web-build parity parity-reference parity-ledger parity-contracts parity-differential parity-performance release-check smoke preflight live liveq gateway-load external-storage-test clean clean-deep
+.PHONY: check test unit unitq rust-test rust-clippy rust-fmt-check web-build parity parity-reference parity-ledger parity-contracts parity-differential parity-performance release-check local-e2e test-e2e release-e2e e2e-plan test-live-tcp smoke preflight live liveq gateway-load external-storage-test clean clean-deep
 
 check: rust-fmt-check rust-clippy test
 
@@ -36,6 +36,19 @@ parity-performance:
 
 release-check:
 	python3 scripts/release_check.py
+
+# One sequential runner, even under make -j. It owns its disposable server.
+local-e2e:
+	python3 scripts/run_e2e.py
+
+# Backward-compatible alias; requesting both targets runs the suite only once.
+test-e2e: local-e2e
+
+release-e2e:
+	python3 scripts/run_e2e.py --release
+
+e2e-plan:
+	python3 scripts/run_e2e.py --release --plan
 
 test unit unitq rust-test:
 	cargo test --manifest-path gateway-rs/Cargo.toml --locked

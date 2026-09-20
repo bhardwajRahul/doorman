@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Pagination from '@/components/Pagination'
 import { getCookie } from '@/utils/http'
 import { SERVER_URL } from '@/utils/config'
@@ -9,7 +9,7 @@ import { ChangeEvent } from 'react'
 import Layout from '@/components/Layout'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { useAuth } from '@/contexts/AuthContext'
-import { SignalPageHeader } from '@/components/signal/Signal'
+import { SignalCopyButton, SignalPageHeader } from '@/components/signal/Signal'
 
 interface Log {
   timestamp: string
@@ -121,6 +121,8 @@ export default function LogsPage() {
   const [searchTrigger, setSearchTrigger] = useState(0)
   const [useLocalTime, setUseLocalTime] = useState(true)
   const [hidePlatformLogs, setHidePlatformLogs] = useState(false)
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(null)
+  const [securityAuditActive, setSecurityAuditActive] = useState(false)
   const [filters, setFilters] = useState<FilterState>(() => {
     const now = new Date()
     const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
@@ -264,7 +266,13 @@ export default function LogsPage() {
     }
   }, [filters, logsPage, logsPageSize, hidePlatformLogs, useLocalTime])
 
-  // (Log file listing removed)
+  useEffect(() => {
+    if (!autoRefreshInterval) return
+    const intervalId = setInterval(() => {
+      fetchLogs()
+    }, autoRefreshInterval * 1000)
+    return () => clearInterval(intervalId)
+  }, [autoRefreshInterval, fetchLogs])
 
   const fetchLogsForRequestId = useCallback(async (requestId: string) => {
     try {
@@ -396,6 +404,7 @@ export default function LogsPage() {
     const now = new Date()
     const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
 
+    setSecurityAuditActive(false)
     // Reset to full-day by default
     setFilters({
       startDate: today,
@@ -416,6 +425,34 @@ export default function LogsPage() {
     setGroupedLogs([])
     setError(null)
   }
+
+  const toggleSecurityAudit = () => {
+    const next = !securityAuditActive
+    setSecurityAuditActive(next)
+    if (next) {
+      setFilters(prev => ({ ...prev, level: 'ERROR' }))
+    } else {
+      setFilters(prev => ({ ...prev, level: '' }))
+    }
+    setLogsPage(1)
+    setHasSearched(true)
+    setSearchTrigger(prev => prev + 1)
+  }
+
+  const displayedGroups = useMemo(() => {
+    if (!securityAuditActive) return groupedLogs
+    return groupedLogs.filter(group => {
+      if (group.has_error) return true
+      return (group.expanded_logs || group.logs || []).some(log => {
+        const lvl = (log.level || '').toUpperCase()
+        if (lvl === 'ERROR' || lvl === 'WARN') return true
+        const status = String(log.status_code || '')
+        if (['401', '403', '429'].includes(status)) return true
+        const msg = (log.message || '').toLowerCase()
+        return /401|403|429|unauthorized|forbidden|blocked|blacklist|rate limit|csrf|denied/.test(msg)
+      })
+    })
+  }, [groupedLogs, securityAuditActive])
 
   const handleSearch = () => {
     setLogsPage(1)
@@ -517,6 +554,39 @@ export default function LogsPage() {
             kicker="Request operations"
             title={<>Request<br className="sm:hidden" /> Logs.</>}
             description="View and analyze system logs and API requests."
+            actions={
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleSecurityAudit}
+                  className={`signal-button text-xs ${
+                    securityAuditActive
+                      ? '!bg-signal-terra font-bold !text-white border-2 border-signal-ink shadow-[2px_2px_0px_0px_rgba(25,32,28,1)]'
+                      : 'btn-secondary'
+                  }`}
+                  title="Filter logs for security events (401, 403, 429, errors, blocks)"
+                >
+                  {securityAuditActive ? '🛡️ SECURITY AUDIT ACTIVE' : '🛡️ SECURITY AUDIT'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoRefreshInterval(prev => prev ? null : 5)}
+                  className={`signal-button text-xs ${autoRefreshInterval ? 'bg-signal-lime font-bold text-signal-ink border-2 border-signal-ink shadow-[2px_2px_0px_0px_rgba(25,32,28,1)]' : 'btn-secondary'}`}
+                  title="Toggle 5-second automatic log polling"
+                >
+                  {autoRefreshInterval ? '● LIVE POLLING (5s)' : '▶ AUTO-REFRESH OFF'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fetchLogs()}
+                  disabled={loading}
+                  className="signal-button btn-secondary text-xs"
+                  title="Fetch latest logs now"
+                >
+                  {loading ? 'REFRESHING...' : 'REFRESH NOW'}
+                </button>
+              </div>
+            }
           />
 
           <div className="card">
@@ -804,7 +874,7 @@ export default function LogsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {groupedLogs.map((group) => (
+                    {displayedGroups.map((group) => (
                       <React.Fragment key={group.request_id}>
                         <tr
                           onClick={() => toggleRequestExpansion(group.request_id)}
@@ -823,9 +893,12 @@ export default function LogsPage() {
                             </button>
                           </td>
                           <td>
-                            <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">
-                              {group.request_id}
-                            </p>
+                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">
+                                {group.request_id}
+                              </span>
+                              <SignalCopyButton text={group.request_id} label="Copy" />
+                            </div>
                           </td>
                           <td>
                             <p className="text-sm text-gray-900 dark:text-white">
@@ -952,16 +1025,20 @@ export default function LogsPage() {
                     Use the filters above to search for specific logs and click "Search Logs" to get started.
                   </p>
                 </div>
-              ) : groupedLogs.length === 0 && !loading && (
+              ) : displayedGroups.length === 0 && !loading && (
                 <div className="text-center py-12">
                   <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
                     <svg className="h-8 w-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                   </div>
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No logs found</h3>
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                    {securityAuditActive ? 'No security events found' : 'No logs found'}
+                  </h3>
                   <p className="text-gray-600 dark:text-gray-400">
-                    Try adjusting your filters or check back later for new logs.
+                    {securityAuditActive
+                      ? 'No 401, 403, 429, or error events recorded within the selected timeframe.'
+                      : 'Try adjusting your filters or check back later for new logs.'}
                   </p>
                 </div>
               )}

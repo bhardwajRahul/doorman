@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import Layout from '@/components/Layout'
 import Pagination from '@/components/Pagination'
+import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { SERVER_URL } from '@/utils/config'
 import { SignalRecordIcon } from '@/components/signal/Signal'
 import { getJson } from '@/utils/api'
@@ -116,7 +117,8 @@ const GroupsPage = () => {
   }
 
   return (
-    <Layout>
+    <ProtectedRoute requiredPermission="manage_groups">
+      <Layout>
       <div className="space-y-6">
         <div className="page-header">
           <div>
@@ -271,6 +273,7 @@ const GroupsPage = () => {
         )}
       </div>
     </Layout>
+  </ProtectedRoute>
   )
 }
 

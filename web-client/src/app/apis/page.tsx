@@ -7,7 +7,8 @@ import { SERVER_URL } from '@/utils/config'
 import { getJson } from '@/utils/api'
 import Layout from '@/components/Layout'
 import Pagination from '@/components/Pagination'
-import { SignalEmptyState, SignalPageHeader, SignalPanel, SignalPrimaryLink, SignalTable } from '@/components/signal/Signal'
+import { ProtectedRoute } from '@/components/ProtectedRoute'
+import { SignalCopyButton, SignalEmptyState, SignalPageHeader, SignalPanel, SignalPrimaryLink, SignalSearchInput, SignalTable } from '@/components/signal/Signal'
 
 interface API {
   api_version: React.ReactNode
@@ -157,25 +158,23 @@ const APIsPage = () => {
   }
 
   return (
-    <Layout>
+    <ProtectedRoute requiredPermission="manage_apis">
+      <Layout>
       <div className="space-y-6">
         <SignalPageHeader kicker="Traffic policy" title={<>API<br className="sm:hidden" /> Gateway.</>} description="Configure, search, and monitor every gateway API without changing its live routing contract." actions={<div className="flex gap-2"><SignalPrimaryLink href="/apis/import-swagger" className="!bg-gray-200 !text-gray-900 border-2 border-gray-900">Import Swagger</SignalPrimaryLink><SignalPrimaryLink href="/apis/add">Add API</SignalPrimaryLink></div>} />
 
-        <SignalPanel tone="white" title="Search and ordering" kicker="Route registry">
+        <SignalPanel tone="white" title="Search and ordering" kicker={`Route registry (Showing ${apis.length} of ${allApis.length})`}>
           <div className="flex flex-col sm:flex-row gap-4">
             <form onSubmit={handleSearch} className="flex-1">
-              <div className="relative">
-                <svg className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search APIs by name, version, type, or description..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
+              <SignalSearchInput
+                value={searchTerm}
+                onChange={(val) => {
+                  setSearchTerm(val)
+                  if (!val) setApis(allApis)
+                }}
+                onClear={() => setApis(allApis)}
+                placeholder="Search APIs by name, version, type, or description..."
+              />
             </form>
 
             <div className="flex gap-2">
@@ -183,19 +182,19 @@ const APIsPage = () => {
                 onClick={() => handleSort('api_name')}
                 className={`btn ${sortBy === 'api_name' ? 'btn-primary' : 'btn-secondary'}`}
               >
-                Name
+                Name {sortBy === 'api_name' && '▲'}
               </button>
               <button
                 onClick={() => handleSort('api_version')}
                 className={`btn ${sortBy === 'api_version' ? 'btn-primary' : 'btn-secondary'}`}
               >
-                Version
+                Version {sortBy === 'api_version' && '▲'}
               </button>
               <button
                 onClick={() => handleSort('api_type')}
                 className={`btn ${sortBy === 'api_type' ? 'btn-primary' : 'btn-secondary'}`}
               >
-                Type
+                Type {sortBy === 'api_type' && '▲'}
               </button>
             </div>
           </div>
@@ -242,7 +241,7 @@ const APIsPage = () => {
                     <tr
                       key={String(api.api_id) || `${api.api_name}-${api.api_version}-${index}`}
                       onClick={() => handleApiClick(api)}
-                      className="cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-surfaceHover transition-colors"
+                      className="group cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-surfaceHover transition-colors"
                     >
                       <td data-label="API">
                         <div className="flex items-center">
@@ -254,6 +253,7 @@ const APIsPage = () => {
                           </div>
                           <div className="flex items-center gap-2">
                             <p className="font-medium text-gray-900 dark:text-white">{api.api_name}</p>
+                            <SignalCopyButton text={String(api.api_name)} label="Copy" className="opacity-0 group-hover:opacity-100 transition-opacity" />
                             {(((api as any).api_ip_mode || 'allow_all') === 'whitelist') && (
                               <span className="badge badge-secondary">IP Whitelist</span>
                             )}
@@ -348,6 +348,7 @@ const APIsPage = () => {
         )}
       </div>
     </Layout>
+  </ProtectedRoute>
   )
 }
 
