@@ -5780,44 +5780,44 @@ async fn api_create_update_delete_emit_named_audit_events() {
         .json()
         .with_writer(capture.clone())
         .finish();
-    async {
-        let create = platform_request(
-            &app,
-            Method::POST,
-            "/platform/api",
-            Some(&cookie),
-            None,
-            Some(json!({
-                "api_name": "audit-api", "api_version": "v1", "api_type": "REST",
-                "api_allowed_roles": ["admin"], "api_allowed_groups": ["ALL"],
-                "api_servers": ["http://127.0.0.1:9"], "active": true
-            })),
-        )
-        .await;
-        assert_eq!(create.status(), StatusCode::CREATED);
-        let update = platform_request(
-            &app,
-            Method::PUT,
-            "/platform/api/audit-api/v1",
-            Some(&cookie),
-            None,
-            Some(json!({"api_description": "updated"})),
-        )
-        .await;
-        assert_eq!(update.status(), StatusCode::OK);
-        let delete = platform_request(
-            &app,
-            Method::DELETE,
-            "/platform/api/audit-api/v1",
-            Some(&cookie),
-            None,
-            None,
-        )
-        .await;
-        assert_eq!(delete.status(), StatusCode::OK);
-    }
-    .with_subscriber(subscriber)
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let create = platform_request(
+        &app,
+        Method::POST,
+        "/platform/api",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_name": "audit-api", "api_version": "v1", "api_type": "REST",
+            "api_allowed_roles": ["admin"], "api_allowed_groups": ["ALL"],
+            "api_servers": ["http://127.0.0.1:9"], "active": true
+        })),
+    )
+    .with_subscriber(dispatch.clone())
     .await;
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let update = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/api/audit-api/v1",
+        Some(&cookie),
+        None,
+        Some(json!({"api_description": "updated"})),
+    )
+    .with_subscriber(dispatch.clone())
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+    let delete = platform_request(
+        &app,
+        Method::DELETE,
+        "/platform/api/audit-api/v1",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .with_subscriber(dispatch)
+    .await;
+    assert_eq!(delete.status(), StatusCode::OK);
     let events = capture.text();
     for action in ["api.create", "api.update", "api.delete"] {
         assert!(events.contains(action), "missing {action}: {events}");

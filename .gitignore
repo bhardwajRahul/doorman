@@ -67,3 +67,6 @@ target/
 # Codex workspace metadata
 .codex/
 **/.codex/
+
+# Private, per-run release logs and reports
+release-evidence/

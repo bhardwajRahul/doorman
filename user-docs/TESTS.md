@@ -10,6 +10,96 @@ The active gateway and control plane test suite is entirely Rust-based.
 
 ## Local checks
 
+### One-command automated E2E run
+
+```bash
+make local-e2e
+```
+
+`make test-e2e` remains an alias for `make local-e2e`.
+No separately running Doorman server is needed. This sequential, fail-fast runner:
+
+1. Tests the Python verification scripts and checks the pinned reference/600-entry ledger.
+2. Runs Rust formatting, Clippy, and the full Cargo suite (including protocol,
+   platform, persistence, and process-lifecycle tests).
+3. Installs frontend dependencies and builds the dashboard.
+4. Starts isolated MongoDB/Redis with Compose and explicitly enables the external
+   storage tests. An ordinary `make test` does **not** exercise those dependencies.
+5. Builds the candidate Docker image, starts it with fresh test credentials and
+   disposable in-memory data, checks backend readiness and frontend HTTP, and
+   runs the normally ignored live TCP/auth test against that image.
+6. Removes its temporary container and Compose resources, keeping logs and reports.
+
+Requires Python 3, Git, Make, Bash, Cargo/rustfmt/Clippy, npm, and a working Docker
+daemon with Compose v2. The runner finds Rust in `~/.cargo/bin` automatically.
+Dependency downloads/image pulls require network access. Do **not** use `sudo make`.
+The external-storage fixture uses loopback ports 27018 and 16379; these must be free
+(override with `DOORMAN_TEST_MONGO_PORT` / `DOORMAN_TEST_REDIS_PORT` if needed).
+The disposable candidate uses automatically assigned loopback ports and never
+mounts your data or reads your root `.env`. Existing Doorman services are untouched.
+Run only one E2E invocation per checkout at a time: Cargo/frontend build directories
+and the default storage ports are shared. The runner stays sequential under `make -j`.
+
+Each run creates a private, unique `release-evidence/<UTC>-<suffix>/` directory
+containing per-stage logs, source revision/status, immutable local image ID, and
+`summary.json`. Failed and interrupted runs keep their evidence; they cannot report
+success. Evidence is gitignored and excluded from Docker builds. Set
+`E2E_EVIDENCE_ROOT` to change its parent directory. Built images and dependency/build
+caches are retained; the runner never prunes Docker or deletes existing project data.
+
+Preview all gates or check tool availability without building:
+
+```bash
+make e2e-plan
+python3 scripts/run_e2e.py --preflight
+```
+
+### Full release gate
+
+```bash
+make release-e2e
+```
+
+This runs everything above **plus** the operational rehearsal command, live
+Python/Rust differential comparison, four-protocol performance comparison, and
+`release-check`. Missing release prerequisites fail **before** expensive builds.
+There are no skip flags. A passing `local-e2e` is not a release sign-off.
+
+Additional setup is required; the repository does not yet supply an automatic
+Python/seeded-upstream fixture launcher or deployment/backup rehearsal implementation:
+
+- Export the production-like configuration variables listed under "Release evidence
+  check" below. Use an isolated rehearsal environment, never a production target.
+- Start the pinned Python reference and equivalent seeded Rust fixture with REST,
+  GraphQL, SOAP, and gRPC upstreams. Export `PYTHON_PARITY_URL`, `RUST_PARITY_URL`,
+  `PYTHON_PARITY_PID`, `RUST_PARITY_PID`, and `PARITY_PERF_SCENARIOS`. The PIDs must be
+  distinct, running processes with readable RSS in this machine's `/proc` (Linux).
+  The JSON scenario file must contain exactly the four protocol profiles described
+  below. The operator is responsible for matching PIDs/URLs to the actual servers,
+  using the pinned Python commit and the candidate image for the Rust fixture.
+- Set `RELEASE_OPERATIONS_COMMAND` to an executable script implementing the isolated
+  [release runbook](OPERATIONS.md#release-candidate-runbook). This is an explicit
+  operator-supplied command, invoked without shell evaluation or arguments. It must
+  perform and assert image smoke, restore, cutover, and rollback; clean up its own
+  resources even on failure; and leave the comparison fixtures running afterward.
+  It receives `RELEASE_IMAGE_ID` (the candidate's immutable local Docker ID),
+  `E2E_EVIDENCE_DIR`, and `RELEASE_OPERATIONS_REPORT` in its environment. It must
+  deploy/test that image and write the schema-version-1 operations report at the
+  supplied path, with a top-level `image_id` equal to `RELEASE_IMAGE_ID` as well as
+  the four successful rehearsal records. Include substantive request/backup evidence
+  from the runbook; do not use a script that only writes `passed: true`.
+
+The runner generates fresh report paths itself; caller-supplied old report paths
+are not reused. Benchmark trials must have zero failed requests on both servers,
+in addition to the existing relative no-regression thresholds. Preflight can be
+run independently with `python3 scripts/run_e2e.py --release --preflight`.
+
+The local image smoke uses HTTP/in-memory storage. The operational hook must supply
+the production-like TLS/shared-storage and backup/recovery evidence. Frontend HTTP
+and build checks are not browser workflow tests; this runner also does not add new
+soak tests or expand the checked-in differential scenarios to all 178 operations.
+Keep the remaining release review/coverage work explicit.
+
 From the repository root:
 
 ```bash
