@@ -961,8 +961,8 @@ async fn dispatch_core_entities(
                 created: "Routing created successfully",
                 updated: "Routing updated successfully",
                 deleted: "Routing deleted successfully",
-                duplicate_code: "RTE001",
-                not_found_code: "RTE002",
+                duplicate_code: "RTG001",
+                not_found_code: "RTG004",
             },
         ),
     ];
@@ -2568,6 +2568,7 @@ async fn entity_routes(
         let normalized = match spec.collection {
             "roles" => normalize_role_model(&mut payload, method == Method::POST),
             "groups" => normalize_group_model(&mut payload, method == Method::POST),
+            "routings" => normalize_routing_model(&mut payload, method == Method::POST),
             _ => Ok(()),
         };
         if normalized.is_err() {
@@ -2582,6 +2583,7 @@ async fn entity_routes(
             let (code, message_text) = match spec.collection {
                 "roles" => ("ROLE007", "No data to update"),
                 "groups" => ("GRP006", "No data to update"),
+                "routings" => ("RTG007", "No data to update"),
                 _ => ("VAL001", "No data to update"),
             };
             return error(StatusCode::BAD_REQUEST, code, message_text, request_id);
@@ -2621,10 +2623,17 @@ async fn entity_routes(
         if !has_permission(state, username, spec.permission).await {
             return error(
                 StatusCode::FORBIDDEN,
-                spec.permission_code,
+                if spec.collection == "routings" {
+                    "RTG009"
+                } else {
+                    spec.permission_code
+                },
                 "Insufficient permissions",
                 request_id,
             );
+        }
+        if spec.collection == "routings" && payload.get("client_key").is_none_or(Value::is_null) {
+            payload["client_key"] = json!(Uuid::new_v4().to_string());
         }
         let Some(key) = payload
             .get(spec.key)
@@ -2686,7 +2695,15 @@ async fn entity_routes(
                     &format!("{}:{key}", spec.collection),
                     "success",
                 );
-                message(StatusCode::CREATED, spec.created, request_id)
+                if spec.collection == "routings" {
+                    message(
+                        StatusCode::CREATED,
+                        &format!("Routing created successfully with key: {key}"),
+                        request_id,
+                    )
+                } else {
+                    message(StatusCode::CREATED, spec.created, request_id)
+                }
             }
             Err(duplicate_error) if duplicate_error.is_duplicate_key() => error(
                 StatusCode::BAD_REQUEST,
@@ -2711,7 +2728,11 @@ async fn entity_routes(
         if !has_permission(state, username, spec.permission).await {
             return error(
                 StatusCode::FORBIDDEN,
-                spec.permission_code,
+                if spec.collection == "routings" {
+                    "RTG013"
+                } else {
+                    spec.permission_code
+                },
                 "Insufficient permissions",
                 request_id,
             );
@@ -2738,7 +2759,15 @@ async fn entity_routes(
     if !has_permission(state, username, spec.permission).await {
         return error(
             StatusCode::FORBIDDEN,
-            "AUTH006",
+            if spec.collection == "routings" {
+                if method == Method::PUT {
+                    "RTG010"
+                } else {
+                    "RTG011"
+                }
+            } else {
+                "AUTH006"
+            },
             "Insufficient permissions",
             request_id,
         );
@@ -2777,6 +2806,43 @@ async fn entity_routes(
         }
     }
     if method == Method::PUT {
+        if spec.collection == "routings" {
+            let existing = match storage.find_one(spec.collection, &filter).await {
+                Ok(Some(routing)) => routing,
+                Ok(None) => {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "RTG004",
+                        "Routing does not exist",
+                        request_id,
+                    );
+                }
+                Err(_) => return unexpected(request_id),
+            };
+            if payload
+                .get(spec.key)
+                .is_some_and(|value| value.as_str() != Some(key))
+            {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "RTG005",
+                    "Routing key cannot be changed",
+                    request_id,
+                );
+            }
+            if payload.as_object().is_some_and(|updates| {
+                updates
+                    .iter()
+                    .all(|(field, value)| existing.get(field) == Some(value))
+            }) {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "RTG006",
+                    "Unable to update routing",
+                    request_id,
+                );
+            }
+        }
         if payload
             .get(spec.key)
             .is_some_and(|value| value.as_str() != Some(key))
@@ -3636,6 +3702,14 @@ async fn endpoint_routes(
         };
     }
     if method == Method::POST && suffix.is_empty() {
+        if normalize_endpoint_model(&mut payload, true).is_err() {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VAL001",
+                "Validation Error",
+                request_id,
+            );
+        }
         if !has_permission(state, username, "manage_endpoints").await {
             return error(
                 StatusCode::FORBIDDEN,
@@ -3660,10 +3734,71 @@ async fn endpoint_routes(
                 );
             }
         }
-        payload["endpoint_id"] = json!(Uuid::new_v4().to_string());
-        if payload.get("client_uri").is_none() {
-            payload["client_uri"] = payload["endpoint_uri"].clone();
+        let api = match storage
+            .find_one(
+                "apis",
+                &json!({"api_name": payload["api_name"], "api_version": payload["api_version"]}),
+            )
+            .await
+        {
+            Ok(Some(api)) => api,
+            Ok(None) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "END002",
+                    "API does not exist for the requested name and version",
+                    request_id,
+                );
+            }
+            Err(_) => return unexpected(request_id),
+        };
+        let duplicate_filter = json!({
+            "api_name": payload["api_name"],
+            "api_version": payload["api_version"],
+            "endpoint_method": payload["endpoint_method"],
+            "endpoint_uri": payload["endpoint_uri"],
+        });
+        if matches!(
+            storage.find_one("endpoints", &duplicate_filter).await,
+            Ok(Some(_))
+        ) {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "END001",
+                "Endpoint already exists for the requested API name, version and URI",
+                request_id,
+            );
         }
+        if let Some(client_uri) = payload.get("client_uri").and_then(Value::as_str) {
+            let conflicts = match storage
+                .find_many(
+                    "endpoints",
+                    &json!({
+                        "api_name": payload["api_name"],
+                        "api_version": payload["api_version"],
+                        "endpoint_method": payload["endpoint_method"],
+                    }),
+                )
+                .await
+            {
+                Ok(endpoints) => endpoints,
+                Err(_) => return unexpected(request_id),
+            };
+            if conflicts.iter().any(|endpoint| {
+                endpoint.get("client_uri").and_then(Value::as_str) == Some(client_uri)
+                    || (endpoint.get("client_uri").is_none_or(Value::is_null)
+                        && endpoint.get("endpoint_uri").and_then(Value::as_str) == Some(client_uri))
+            }) {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "END001",
+                    "Client URI conflicts with an existing endpoint",
+                    request_id,
+                );
+            }
+        }
+        payload["api_id"] = api.get("api_id").cloned().unwrap_or(Value::Null);
+        payload["endpoint_id"] = json!(Uuid::new_v4().to_string());
         let target = format!(
             "{}/{}/{}{}",
             payload["api_name"].as_str().unwrap_or_default(),
@@ -3712,8 +3847,122 @@ async fn endpoint_routes(
         };
     }
     if parts.len() >= 4 {
+        if method == Method::PUT && normalize_endpoint_model(&mut payload, false).is_err() {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VAL001",
+                "Validation Error",
+                request_id,
+            );
+        }
         let uri = format!("/{}", parts[3..].join("/"));
         let filter = json!({"endpoint_method": parts[0], "api_name": parts[1], "api_version": parts[2], "endpoint_uri": uri});
+        if method == Method::PUT {
+            let existing = match storage.find_one("endpoints", &filter).await {
+                Ok(Some(endpoint)) => endpoint,
+                Ok(None) => {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "END008",
+                        "Endpoint does not exist for the requested API name, version and URI",
+                        request_id,
+                    );
+                }
+                Err(_) => return unexpected(request_id),
+            };
+            if ["endpoint_method", "api_name", "api_version", "endpoint_uri"]
+                .iter()
+                .any(|field| {
+                    payload
+                        .get(*field)
+                        .is_some_and(|value| existing.get(*field) != Some(value))
+                })
+            {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "END006",
+                    "API method, name, version and URI cannot be updated",
+                    request_id,
+                );
+            }
+            if payload.as_object().is_some_and(|object| object.is_empty()) {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "END007",
+                    "No data to update",
+                    request_id,
+                );
+            }
+            if payload.as_object().is_some_and(|updates| {
+                updates
+                    .iter()
+                    .all(|(field, value)| existing.get(field) == Some(value))
+            }) {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "END003",
+                    "Unable to update endpoint",
+                    request_id,
+                );
+            }
+            if let Some(client_uri) = payload.get("client_uri").and_then(Value::as_str) {
+                if existing.get("client_uri").and_then(Value::as_str) != Some(client_uri) {
+                    let conflicts = match storage
+                        .find_many(
+                            "endpoints",
+                            &json!({"endpoint_method": parts[0], "api_name": parts[1], "api_version": parts[2]}),
+                        )
+                        .await
+                    {
+                        Ok(endpoints) => endpoints,
+                        Err(_) => return unexpected(request_id),
+                    };
+                    if conflicts.iter().any(|endpoint| {
+                        endpoint.get("endpoint_uri") != Some(&filter["endpoint_uri"])
+                            && (endpoint.get("client_uri").and_then(Value::as_str)
+                                == Some(client_uri)
+                                || (endpoint.get("client_uri").is_none_or(Value::is_null)
+                                    && endpoint.get("endpoint_uri").and_then(Value::as_str)
+                                        == Some(client_uri)))
+                    }) {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "END006",
+                            "Client URI conflicts with an existing endpoint",
+                            request_id,
+                        );
+                    }
+                }
+            }
+        }
+        if method == Method::DELETE {
+            if !has_permission(state, username, "manage_endpoints").await {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "END012",
+                    "You do not have permission to delete endpoints",
+                    request_id,
+                );
+            }
+            return match storage.delete_one("endpoints", &filter).await {
+                Ok(true) => {
+                    audit::management_mutation(
+                        username,
+                        "endpoint.delete",
+                        &filter.to_string(),
+                        "success",
+                    );
+                    message(StatusCode::OK, "Endpoint deleted successfully", request_id)
+                }
+                Ok(false) => error(
+                    StatusCode::BAD_REQUEST,
+                    "END004",
+                    "Endpoint does not exist for the requested API name, version and URI",
+                    request_id,
+                ),
+                Err(_) => unexpected(request_id),
+            };
+        }
         return document_by_method(
             state,
             "endpoints",
@@ -4218,6 +4467,307 @@ fn normalize_group_model(payload: &mut Value, create: bool) -> Result<(), ()> {
             object.insert("api_access".to_owned(), json!([]));
         }
         None => {}
+    }
+    Ok(())
+}
+
+fn normalize_routing_model(payload: &mut Value, create: bool) -> Result<(), ()> {
+    let object = payload.as_object_mut().ok_or(())?;
+    object.retain(|field, value| {
+        matches!(
+            field.as_str(),
+            "routing_name"
+                | "routing_servers"
+                | "routing_description"
+                | "client_key"
+                | "server_index"
+        ) && (create || (!value.is_null() && field != "server_index"))
+    });
+    for field in ["routing_name", "client_key"] {
+        if create && field == "client_key" && !object.contains_key(field) {
+            continue;
+        }
+        if let Some(value) = object.get(field) {
+            if value.is_null() {
+                if create && field == "client_key" {
+                    continue;
+                }
+                return Err(());
+            }
+            let value = security_setting_string(value).ok_or(())?;
+            if value.is_empty() || value.len() > 50 {
+                return Err(());
+            }
+            object.insert(field.to_owned(), json!(value));
+        } else if create && field == "routing_name" {
+            return Err(());
+        }
+    }
+    match object.get("routing_servers") {
+        Some(Value::Array(servers)) if !servers.is_empty() => {
+            let servers = servers
+                .iter()
+                .map(security_setting_string)
+                .collect::<Option<Vec<_>>>()
+                .ok_or(())?
+                .into_iter()
+                .map(Value::String)
+                .collect();
+            object.insert("routing_servers".to_owned(), Value::Array(servers));
+        }
+        Some(_) => return Err(()),
+        None if create => return Err(()),
+        None => {}
+    }
+    match object.get("routing_description") {
+        Some(value) if !value.is_null() => {
+            let value = security_setting_string(value).ok_or(())?;
+            if value.len() > 255 {
+                return Err(());
+            }
+            object.insert("routing_description".to_owned(), json!(value));
+        }
+        Some(_) if create => {}
+        Some(_) => {
+            object.remove("routing_description");
+        }
+        None if create => {
+            object.insert("routing_description".to_owned(), Value::Null);
+        }
+        None => {}
+    }
+    if create {
+        match object.get("server_index") {
+            Some(Value::Null) => {}
+            Some(value) => {
+                let value = rate_rule_integer(value)
+                    .filter(|value| *value >= 0)
+                    .ok_or(())?;
+                object.insert("server_index".to_owned(), json!(value));
+            }
+            None => {
+                object.insert("server_index".to_owned(), json!(0));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_endpoint_model(payload: &mut Value, create: bool) -> Result<(), ()> {
+    let object = payload.as_object_mut().ok_or(())?;
+    object.retain(|field, value| {
+        matches!(
+            field.as_str(),
+            "api_name"
+                | "api_version"
+                | "endpoint_method"
+                | "endpoint_uri"
+                | "endpoint_description"
+                | "endpoint_servers"
+                | "client_uri"
+                | "api_id"
+                | "endpoint_id"
+        ) && (create || !value.is_null())
+    });
+    for (field, minimum, maximum) in [
+        ("api_name", 1, 50),
+        ("api_version", 1, 10),
+        ("endpoint_method", 1, 10),
+        ("endpoint_uri", 1, 255),
+        ("endpoint_description", 1, 255),
+        ("client_uri", 1, 255),
+        ("api_id", 1, 255),
+        ("endpoint_id", 1, 255),
+    ] {
+        if let Some(value) = object.get(field) {
+            if value.is_null() {
+                if create && matches!(field, "client_uri" | "api_id" | "endpoint_id") {
+                    continue;
+                }
+                return Err(());
+            }
+            let value = security_setting_string(value).ok_or(())?;
+            if value.len() < minimum || value.len() > maximum {
+                return Err(());
+            }
+            object.insert(field.to_owned(), json!(value));
+        } else if create && !matches!(field, "client_uri" | "api_id" | "endpoint_id") {
+            return Err(());
+        }
+    }
+    match object.get("endpoint_servers") {
+        Some(Value::Array(servers)) => {
+            let servers = servers
+                .iter()
+                .map(security_setting_string)
+                .collect::<Option<Vec<_>>>()
+                .ok_or(())?
+                .into_iter()
+                .map(Value::String)
+                .collect();
+            object.insert("endpoint_servers".to_owned(), Value::Array(servers));
+        }
+        Some(Value::Null) if create => {}
+        Some(_) => return Err(()),
+        None => {}
+    }
+    Ok(())
+}
+
+fn normalize_subscription_model(payload: &mut Value) -> Result<(), ()> {
+    let object = payload.as_object_mut().ok_or(())?;
+    object.retain(|field, _| matches!(field.as_str(), "username" | "api_name" | "api_version"));
+    for (field, minimum, maximum) in [
+        ("username", 3, 50),
+        ("api_name", 3, 50),
+        ("api_version", 1, 5),
+    ] {
+        let value = object
+            .get(field)
+            .and_then(security_setting_string)
+            .ok_or(())?;
+        if value.len() < minimum || value.len() > maximum {
+            return Err(());
+        }
+        object.insert(field.to_owned(), json!(value));
+    }
+    Ok(())
+}
+
+fn normalize_credit_model(payload: &mut Value, create: bool) -> Result<(), ()> {
+    let object = payload.as_object_mut().ok_or(())?;
+    object.retain(|field, _| {
+        matches!(
+            field.as_str(),
+            "api_credit_group"
+                | "api_key"
+                | "api_key_header"
+                | "credit_tiers"
+                | "api_key_new"
+                | "api_key_rotation_expires"
+        )
+    });
+    for field in ["api_credit_group", "api_key", "api_key_header"] {
+        let value = object
+            .get(field)
+            .and_then(security_setting_string)
+            .ok_or(())?;
+        if field == "api_credit_group" && (value.is_empty() || value.len() > 50) {
+            return Err(());
+        }
+        object.insert(field.to_owned(), json!(value));
+    }
+    for field in ["api_key_new", "api_key_rotation_expires"] {
+        if let Some(value) = object.get(field) {
+            if value.is_null() {
+                if !create {
+                    object.remove(field);
+                }
+                continue;
+            }
+            let value = security_setting_string(value).ok_or(())?;
+            object.insert(field.to_owned(), json!(value));
+        }
+    }
+    let tiers = object
+        .get_mut("credit_tiers")
+        .and_then(Value::as_array_mut)
+        .filter(|tiers| !tiers.is_empty())
+        .ok_or(())?;
+    for tier in tiers {
+        let tier = tier.as_object_mut().ok_or(())?;
+        tier.retain(|field, _| {
+            matches!(
+                field.as_str(),
+                "tier_name" | "credits" | "input_limit" | "output_limit" | "reset_frequency"
+            )
+        });
+        for field in ["tier_name", "reset_frequency"] {
+            let value = tier
+                .get(field)
+                .and_then(security_setting_string)
+                .ok_or(())?;
+            if field == "tier_name" && (value.is_empty() || value.len() > 50) {
+                return Err(());
+            }
+            tier.insert(field.to_owned(), json!(value));
+        }
+        for field in ["credits", "input_limit", "output_limit"] {
+            let value = tier.get(field).and_then(rate_rule_integer).ok_or(())?;
+            tier.insert(field.to_owned(), json!(value));
+        }
+    }
+    Ok(())
+}
+
+/// Preserve the service-level validation that runs after FastAPI has parsed a
+/// valid `CreditModel` and authenticated the caller.  These fields have no
+/// Pydantic length constraint, so an empty string is model-valid but rejected
+/// by `CreditService` with its domain-specific error.
+fn validate_credit_definition_fields(payload: &Value) -> Result<(), (&'static str, &'static str)> {
+    if payload
+        .get("api_credit_group")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(("CRD009", "Credit group name is required"));
+    }
+    if ["api_key", "api_key_header"].iter().any(|field| {
+        payload
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    }) {
+        return Err(("CRD010", "API key and header are required"));
+    }
+    Ok(())
+}
+
+fn normalize_user_credit_model(payload: &mut Value) -> Result<(), ()> {
+    let object = payload.as_object_mut().ok_or(())?;
+    object.retain(|field, _| matches!(field.as_str(), "username" | "users_credits"));
+    let username = object
+        .get("username")
+        .and_then(security_setting_string)
+        .ok_or(())?;
+    if username.len() < 3 || username.len() > 50 {
+        return Err(());
+    }
+    object.insert("username".to_owned(), json!(username));
+    let credits = object
+        .get_mut("users_credits")
+        .and_then(Value::as_object_mut)
+        .ok_or(())?;
+    for credit in credits.values_mut() {
+        let credit = credit.as_object_mut().ok_or(())?;
+        credit.retain(|field, _| {
+            matches!(
+                field.as_str(),
+                "tier_name" | "available_credits" | "reset_date" | "user_api_key"
+            )
+        });
+        let tier_name = credit
+            .get("tier_name")
+            .and_then(security_setting_string)
+            .ok_or(())?;
+        if tier_name.is_empty() || tier_name.len() > 50 {
+            return Err(());
+        }
+        credit.insert("tier_name".to_owned(), json!(tier_name));
+        let available = credit
+            .get("available_credits")
+            .and_then(rate_rule_integer)
+            .ok_or(())?;
+        credit.insert("available_credits".to_owned(), json!(available));
+        for field in ["reset_date", "user_api_key"] {
+            if let Some(value) = credit.get(field) {
+                if value.is_null() {
+                    continue;
+                }
+                let value = security_setting_string(value).ok_or(())?;
+                credit.insert(field.to_owned(), json!(value));
+            }
+        }
     }
     Ok(())
 }
@@ -6804,7 +7354,7 @@ async fn subscription_routes(
     state: &AppState,
     path: &str,
     method: &Method,
-    payload: Value,
+    mut payload: Value,
     username: &str,
     request_id: &str,
 ) -> Response {
@@ -6870,6 +7420,14 @@ async fn subscription_routes(
         None
     };
     if let Some(subscribe) = operation {
+        if normalize_subscription_model(&mut payload).is_err() {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VAL001",
+                "Validation Error",
+                request_id,
+            );
+        }
         let target = payload
             .get("username")
             .and_then(Value::as_str)
@@ -7013,7 +7571,7 @@ async fn credit_routes(
     state: &AppState,
     path: &str,
     method: &Method,
-    payload: Value,
+    mut payload: Value,
     username: &str,
     request_id: &str,
 ) -> Response {
@@ -7021,6 +7579,21 @@ async fn credit_routes(
         return unexpected(request_id);
     };
     let suffix = path.strip_prefix("/credit").unwrap_or("").trim_matches('/');
+    let model_result = if (method == Method::POST && suffix.is_empty()) || method == Method::PUT {
+        normalize_credit_model(&mut payload, method == Method::POST && suffix.is_empty())
+    } else if method == Method::POST && !suffix.is_empty() && suffix != "rotate-key" {
+        normalize_user_credit_model(&mut payload)
+    } else {
+        Ok(())
+    };
+    if model_result.is_err() {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VAL001",
+            "Validation Error",
+            request_id,
+        );
+    }
     if method == Method::POST && suffix == "rotate-key" {
         let Some(group) = payload.get("api_credit_group").and_then(Value::as_str) else {
             return error(
@@ -7090,6 +7663,9 @@ async fn credit_routes(
                 request_id,
             );
         }
+        if let Err((code, message_text)) = validate_credit_definition_fields(&payload) {
+            return error(StatusCode::BAD_REQUEST, code, message_text, request_id);
+        }
         let group = payload
             .get("api_credit_group")
             .and_then(Value::as_str)
@@ -7103,8 +7679,8 @@ async fn credit_routes(
         {
             return error(
                 StatusCode::BAD_REQUEST,
-                "CRD004",
-                "Credit definition already exists",
+                "CRD001",
+                "Credit group already exists",
                 request_id,
             );
         }
@@ -7144,6 +7720,33 @@ async fn credit_routes(
         }
         let filter = json!({"api_credit_group": suffix});
         if method == Method::PUT {
+            if let Err((code, message_text)) = validate_credit_definition_fields(&payload) {
+                return error(StatusCode::BAD_REQUEST, code, message_text, request_id);
+            }
+            if payload
+                .get("api_credit_group")
+                .and_then(Value::as_str)
+                .is_some_and(|group| group != suffix)
+            {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "CRD003",
+                    "Credit group name cannot be updated",
+                    request_id,
+                );
+            }
+            match storage.find_one("credit_defs", &filter).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "CRD004",
+                        "Credit definition does not exist for the requested group",
+                        request_id,
+                    );
+                }
+                Err(_) => return unexpected(request_id),
+            }
             return match storage.update_one("credit_defs", &filter, &payload).await {
                 Ok(Some(_)) => message(
                     StatusCode::OK,
@@ -7151,9 +7754,9 @@ async fn credit_routes(
                     request_id,
                 ),
                 _ => error(
-                    StatusCode::NOT_FOUND,
-                    "CRD002",
-                    "Credit definition not found",
+                    StatusCode::BAD_REQUEST,
+                    "CRD004",
+                    "Credit definition does not exist for the requested group",
                     request_id,
                 ),
             };
@@ -7165,9 +7768,9 @@ async fn credit_routes(
                 request_id,
             ),
             _ => error(
-                StatusCode::NOT_FOUND,
-                "CRD002",
-                "Credit definition not found",
+                StatusCode::BAD_REQUEST,
+                "CRD007",
+                "Credit definition does not exist for the requested group",
                 request_id,
             ),
         };

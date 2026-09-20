@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
+import { useState, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react'
 
 type Tone = 'ink' | 'white' | 'lime' | 'terracotta' | 'blue' | 'dark'
 type Status = 'healthy' | 'attention' | 'info' | 'critical' | 'neutral'
@@ -38,4 +38,182 @@ export function SignalPrimaryLink({ href, className = '', children }: { href: st
 
 export function AppShell({ children }: { children: ReactNode }) {
   return <div className="signal-app-shell">{children}</div>
+}
+
+export interface BreadcrumbItem {
+  label: string
+  href?: string
+}
+
+export function SignalBreadcrumbs({ items, className = '' }: { items: BreadcrumbItem[]; className?: string }) {
+  return (
+    <nav aria-label="Breadcrumb" className={`signal-breadcrumbs mb-4 ${className}`}>
+      <ol className="flex flex-wrap items-center gap-2 font-mono text-xs uppercase tracking-wider text-signal-mist">
+        {items.map((item, idx) => {
+          const isLast = idx === items.length - 1
+          return (
+            <li key={idx} className="flex items-center gap-2">
+              {idx > 0 && <span className="text-signal-ink font-bold select-none">/</span>}
+              {item.href && !isLast ? (
+                <Link href={item.href} className="hover:text-signal-terra hover:underline underline-offset-4 transition-colors font-bold text-signal-ink">
+                  {item.label}
+                </Link>
+              ) : (
+                <span className={isLast ? 'font-bold text-signal-ink bg-white border border-signal-ink px-1.5 py-0.5 shadow-[2px_2px_0px_0px_rgba(25,32,28,1)]' : ''}>
+                  {item.label}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </nav>
+  )
+}
+
+export function SignalCopyButton({ text, label = 'Copy', className = '' }: { text: string; label?: string; className?: string }) {
+  const [copied, setCopied] = useState(false)
+  const onCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error('Failed to copy', err)
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title={`Copy "${text}"`}
+      className={`signal-button text-[10px] py-0.5 px-2 min-h-0 border border-signal-ink ${copied ? 'bg-signal-lime font-bold !shadow-none' : 'bg-white hover:bg-signal-warm'} ${className}`}
+    >
+      {copied ? 'COPIED!' : label}
+    </button>
+  )
+}
+
+export function SignalSearchInput({
+  value,
+  onChange,
+  onClear,
+  placeholder = 'Search...',
+  className = ''
+}: {
+  value: string
+  onChange: (val: string) => void
+  onClear?: () => void
+  placeholder?: string
+  className?: string
+}) {
+  return (
+    <div className={`relative flex items-center ${className}`}>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="search-input w-full pr-8"
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => {
+            onChange('')
+            onClear?.()
+          }}
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 font-mono text-xs font-bold text-signal-mist hover:text-signal-terra p-1"
+          title="Clear search"
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function SignalMethodFilter({
+  selected,
+  onChange,
+  counts
+}: {
+  selected: string
+  onChange: (method: string) => void
+  counts?: Record<string, number>
+}) {
+  const methods = ['ALL', 'GET', 'POST', 'PUT', 'DELETE', 'PATCH']
+  const getTone = (m: string) => {
+    if (m === 'GET') return 'bg-[#38bdf8] text-signal-ink'
+    if (m === 'POST') return 'bg-signal-lime text-signal-ink'
+    if (m === 'PUT') return 'bg-[#fbbf24] text-signal-ink'
+    if (m === 'DELETE') return 'bg-signal-terra text-white'
+    if (m === 'PATCH') return 'bg-[#c084fc] text-signal-ink'
+    return 'bg-white text-signal-ink'
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {methods.map(m => {
+        const active = selected.toUpperCase() === m
+        return (
+          <button
+            key={m}
+            type="button"
+            onClick={() => onChange(m)}
+            className={`font-mono text-xs font-bold uppercase px-2.5 py-1 border-2 border-signal-ink transition-all ${
+              active ? `${getTone(m)} shadow-[2px_2px_0px_0px_rgba(25,32,28,1)] translate-x-[-1px] translate-y-[-1px]` : 'bg-white text-signal-ink hover:bg-signal-warm'
+            }`}
+          >
+            {m} {counts?.[m] !== undefined && <span className="opacity-75">({counts[m]})</span>}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+export function SignalSecretMask({
+  value,
+  visibleChars = 4,
+  className = '',
+}: {
+  value: string
+  visibleChars?: number
+  className?: string
+}) {
+  const [revealed, setRevealed] = useState(false)
+
+  if (!value) {
+    return <span className="text-signal-mist font-mono text-xs">—</span>
+  }
+
+  const maskSecret = (str: string) => {
+    if (str.length <= visibleChars * 2) {
+      return '••••••••'
+    }
+    const prefix = str.slice(0, visibleChars)
+    const suffix = str.slice(-visibleChars)
+    return `${prefix}••••••••${suffix}`
+  }
+
+  return (
+    <div className={`inline-flex items-center gap-1.5 font-mono text-xs ${className}`}>
+      <code className="bg-signal-warm/80 px-2 py-0.5 border border-signal-ink select-all text-signal-ink">
+        {revealed ? value : maskSecret(value)}
+      </code>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          setRevealed(!revealed)
+        }}
+        title={revealed ? 'Hide secret' : 'Reveal secret'}
+        className="signal-button text-[10px] py-0.5 px-2 min-h-0 border border-signal-ink bg-white hover:bg-signal-warm"
+      >
+        {revealed ? 'HIDE' : 'SHOW'}
+      </button>
+      <SignalCopyButton text={value} label="COPY" />
+    </div>
+  )
 }

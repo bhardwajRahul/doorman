@@ -113,7 +113,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const canAccessPagePermission = (permission: string) => {
-    return !!(authState.isAuthenticated && authState.permissions && authState.permissions[permission])
+    if (!authState.isAuthenticated) return false
+    // Superadmin bypass: admin always has all permissions
+    if (authState.user?.username === 'admin' || authState.user?.role === 'admin') {
+      return true
+    }
+    return !!(authState.permissions && authState.permissions[permission])
   }
 
   useEffect(() => {

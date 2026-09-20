@@ -1385,6 +1385,300 @@ async fn role_and_group_models_match_pydantic_defaults_coercion_and_empty_update
 }
 
 #[tokio::test]
+async fn routing_models_match_pydantic_generation_coercion_and_update_exclusion() {
+    let state = memory_state(false).await;
+    let storage = state.storage.as_ref().unwrap().clone();
+    let app = build_router(state);
+    let (cookie, _) = login(&app).await;
+    let created = platform_request(
+        &app,
+        Method::POST,
+        "/platform/routing",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "routing_name": 123, "routing_servers": [1, true], "server_index": "2", "ignored": "field"
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let body = response_json(created).await;
+    let message = body["message"].as_str().unwrap();
+    let client_key = message
+        .strip_prefix("Routing created successfully with key: ")
+        .unwrap();
+    assert!(uuid::Uuid::parse_str(client_key).is_ok());
+    let routing = storage
+        .find_one("routings", &json!({"client_key": client_key}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(routing["routing_name"], "123");
+    assert_eq!(routing["routing_servers"], json!(["1", "True"]));
+    assert_eq!(routing["server_index"], 2);
+    assert_eq!(routing["routing_description"], Value::Null);
+    assert!(routing.get("ignored").is_none());
+    let updated = platform_request(
+        &app,
+        Method::PUT,
+        &format!("/platform/routing/{client_key}"),
+        Some(&cookie),
+        None,
+        Some(json!({"routing_servers": [2], "server_index": 99, "ignored": "field"})),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let routing = storage
+        .find_one("routings", &json!({"client_key": client_key}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(routing["routing_servers"], json!(["2"]));
+    assert_eq!(routing["server_index"], 2);
+    let changed_key = platform_request(
+        &app,
+        Method::PUT,
+        &format!("/platform/routing/{client_key}"),
+        Some(&cookie),
+        None,
+        Some(json!({"client_key": "different-key"})),
+    )
+    .await;
+    assert_eq!(changed_key.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(changed_key).await["error_code"], "RTG005");
+    let no_op_update = platform_request(
+        &app,
+        Method::PUT,
+        &format!("/platform/routing/{client_key}"),
+        Some(&cookie),
+        None,
+        Some(json!({"routing_servers": ["2"]})),
+    )
+    .await;
+    assert_eq!(no_op_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(no_op_update).await["error_code"], "RTG006");
+    let invalid = platform_request(
+        &app,
+        Method::POST,
+        "/platform/routing",
+        Some(&cookie),
+        None,
+        Some(json!({"routing_name": "invalid", "routing_servers": []})),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let empty_update = platform_request(
+        &app,
+        Method::PUT,
+        &format!("/platform/routing/{client_key}"),
+        Some(&cookie),
+        None,
+        Some(json!({"server_index": 42, "ignored": "field"})),
+    )
+    .await;
+    assert_eq!(empty_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(empty_update).await["error_code"], "RTG007");
+    let missing_update = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/routing/missing-key",
+        Some(&cookie),
+        None,
+        Some(json!({"routing_name": "missing"})),
+    )
+    .await;
+    assert_eq!(missing_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(missing_update).await["error_code"], "RTG004");
+}
+
+#[tokio::test]
+async fn endpoint_models_match_pydantic_coercion_bounds_and_null_elision() {
+    let state = memory_state(false).await;
+    let storage = state.storage.as_ref().unwrap().clone();
+    storage
+        .insert_one(
+            "apis",
+            json!({"api_name": "endpoint-model", "api_version": "v1", "api_id": "source-api-id"}),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state);
+    let (cookie, _) = login(&app).await;
+    let created = platform_request(
+        &app,
+        Method::POST,
+        "/platform/endpoint",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET",
+            "endpoint_uri": "/items", "endpoint_description": 123, "endpoint_servers": [1, false],
+            "ignored": "field"
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let endpoint = storage
+        .find_one("endpoints", &json!({
+            "api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET", "endpoint_uri": "/items"
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(endpoint["endpoint_description"], "123");
+    assert_eq!(endpoint["endpoint_servers"], json!(["1", "False"]));
+    assert_eq!(endpoint["client_uri"], Value::Null);
+    assert_eq!(endpoint["api_id"], "source-api-id");
+    assert!(endpoint.get("ignored").is_none());
+    let duplicate = platform_request(
+        &app,
+        Method::POST,
+        "/platform/endpoint",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET",
+            "endpoint_uri": "/items", "endpoint_description": "duplicate"
+        })),
+    )
+    .await;
+    assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(duplicate).await["error_code"], "END001");
+    let client_uri_conflict = platform_request(
+        &app,
+        Method::POST,
+        "/platform/endpoint",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET",
+            "endpoint_uri": "/alternate", "client_uri": "/items", "endpoint_description": "conflict"
+        })),
+    )
+    .await;
+    assert_eq!(client_uri_conflict.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(client_uri_conflict).await["error_code"],
+        "END001"
+    );
+    let second = platform_request(
+        &app,
+        Method::POST,
+        "/platform/endpoint",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET",
+            "endpoint_uri": "/second", "client_uri": "/second-client", "endpoint_description": "second"
+        })),
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::CREATED);
+    let updated = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/endpoint/GET/endpoint-model/v1/items",
+        Some(&cookie),
+        None,
+        Some(json!({"endpoint_description": true, "endpoint_servers": null, "ignored": "field"})),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let endpoint = storage
+        .find_one("endpoints", &json!({"api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET", "endpoint_uri": "/items"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(endpoint["endpoint_description"], "True");
+    assert_eq!(endpoint["endpoint_servers"], json!(["1", "False"]));
+    let no_op_update = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/endpoint/GET/endpoint-model/v1/items",
+        Some(&cookie),
+        None,
+        Some(json!({"endpoint_description": "True"})),
+    )
+    .await;
+    assert_eq!(no_op_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(no_op_update).await["error_code"], "END003");
+    let immutable_update = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/endpoint/GET/endpoint-model/v1/items",
+        Some(&cookie),
+        None,
+        Some(json!({"endpoint_uri": "/moved"})),
+    )
+    .await;
+    assert_eq!(immutable_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(immutable_update).await["error_code"],
+        "END006"
+    );
+    let client_uri_update_conflict = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/endpoint/GET/endpoint-model/v1/second",
+        Some(&cookie),
+        None,
+        Some(json!({"client_uri": "/items"})),
+    )
+    .await;
+    assert_eq!(client_uri_update_conflict.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(client_uri_update_conflict).await["error_code"],
+        "END006"
+    );
+    let empty_update = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/endpoint/GET/endpoint-model/v1/items",
+        Some(&cookie),
+        None,
+        Some(json!({"endpoint_servers": null, "ignored": "field"})),
+    )
+    .await;
+    assert_eq!(empty_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(empty_update).await["error_code"], "END007");
+    let invalid = platform_request(
+        &app,
+        Method::POST,
+        "/platform/endpoint",
+        Some(&cookie),
+        None,
+        Some(json!({"api_name": "endpoint-model", "api_version": "v1", "endpoint_method": "GET", "endpoint_uri": "/bad", "endpoint_description": ""})),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let missing_api = platform_request(
+        &app,
+        Method::POST,
+        "/platform/endpoint",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_name": "missing-api", "api_version": "v1", "endpoint_method": "GET",
+            "endpoint_uri": "/items", "endpoint_description": "missing parent"
+        })),
+    )
+    .await;
+    assert_eq!(missing_api.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(missing_api).await["error_code"], "END002");
+    let missing_delete = platform_request(
+        &app,
+        Method::DELETE,
+        "/platform/endpoint/GET/endpoint-model/v1/missing",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(missing_delete.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(missing_delete).await["error_code"], "END004");
+}
+
+#[tokio::test]
 async fn incomplete_subscription_payload_uses_python_validation_envelope_before_auth() {
     let app = build_router(memory_state(false).await);
     let response = platform_request(
@@ -1400,6 +1694,47 @@ async fn incomplete_subscription_payload_uses_python_validation_envelope_before_
     let body = response_json(response).await;
     assert_eq!(body["error_code"], "VAL001");
     assert_eq!(body["error_message"], "Validation Error");
+}
+
+#[tokio::test]
+async fn subscription_model_coerces_python_scalars_and_ignores_unknown_fields() {
+    let state = memory_state(false).await;
+    let storage = state.storage.as_ref().unwrap().clone();
+    storage
+        .insert_one(
+            "apis",
+            json!({"api_name": "True", "api_version": "1", "api_allowed_groups": ["ALL"]}),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state);
+    let (cookie, _) = login(&app).await;
+    let subscribed = platform_request(
+        &app,
+        Method::POST,
+        "/platform/subscription/subscribe",
+        Some(&cookie),
+        None,
+        Some(json!({"username": "admin", "api_name": true, "api_version": 1, "ignored": "field"})),
+    )
+    .await;
+    assert_eq!(subscribed.status(), StatusCode::OK);
+    let subscription = storage
+        .find_one("subscriptions", &json!({"username": "admin"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(subscription["apis"], json!(["True/1"]));
+    let invalid = platform_request(
+        &app,
+        Method::POST,
+        "/platform/subscription/subscribe",
+        Some(&cookie),
+        None,
+        Some(json!({"username": "ab", "api_name": "api", "api_version": "v1"})),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -3445,7 +3780,13 @@ async fn limited_role_cannot_manage_monitor_credits_caches_or_endpoint_validatio
             "api_credit_group": "limited",
             "api_key": "x",
             "api_key_header": "x-api-key",
-            "credit_tiers": []
+            "credit_tiers": [{
+                "tier_name": "default",
+                "credits": 1,
+                "input_limit": 0,
+                "output_limit": 0,
+                "reset_frequency": "monthly"
+            }]
         })),
     )
     .await;
@@ -5562,7 +5903,7 @@ async fn platform_mutations_emit_payload_free_audit_events() {
 async fn python_credit_definition_masks_secret_key_material() {
     let app = build_router(memory_state(false).await);
     let (cookie, _) = login(&app).await;
-    let create = platform_request(&app, Method::POST, "/platform/credit", Some(&cookie), None, Some(json!({"api_credit_group": "maskgroup", "api_key": "VERY-SECRET-KEY", "api_key_header": "x-api-key", "credit_tiers": []}))).await;
+    let create = platform_request(&app, Method::POST, "/platform/credit", Some(&cookie), None, Some(json!({"api_credit_group": "maskgroup", "api_key": "VERY-SECRET-KEY", "api_key_header": "x-api-key", "credit_tiers": [{"tier_name": "default", "credits": 5, "input_limit": 0, "output_limit": 0, "reset_frequency": "monthly"}]}))).await;
     assert_eq!(create.status(), StatusCode::CREATED);
     let response = platform_request(
         &app,
@@ -5580,6 +5921,163 @@ async fn python_credit_definition_masks_secret_key_material() {
     assert_eq!(body["api_key_header"], "x-api-key");
     assert_eq!(body["api_key_present"], true);
     assert!(body.get("api_key").is_none());
+}
+
+#[tokio::test]
+async fn credit_models_match_pydantic_required_fields_coercion_and_unknown_elision() {
+    let state = memory_state(false).await;
+    let storage = state.storage.as_ref().unwrap().clone();
+    let app = build_router(state);
+    let (cookie, _) = login(&app).await;
+    let create = platform_request(
+        &app,
+        Method::POST,
+        "/platform/credit",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_credit_group": true, "api_key": false, "api_key_header": 7,
+            "api_key_new": 9,
+            "credit_tiers": [{
+                "tier_name": 1, "credits": "8", "input_limit": true, "output_limit": 3.9,
+                "reset_frequency": false, "ignored": "field"
+            }], "ignored": "field"
+        })),
+    )
+    .await;
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let credit = storage
+        .find_one("credit_defs", &json!({"api_credit_group": "True"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(credit["api_key"], "False");
+    assert_eq!(credit["api_key_header"], "7");
+    assert_eq!(credit["api_key_new"], "9");
+    assert_eq!(
+        credit["credit_tiers"],
+        json!([{
+            "tier_name": "1", "credits": 8, "input_limit": 1, "output_limit": 3,
+            "reset_frequency": "False"
+        }])
+    );
+    assert!(credit.get("ignored").is_none());
+    let duplicate = platform_request(
+        &app,
+        Method::POST,
+        "/platform/credit",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_credit_group": "True", "api_key": "key", "api_key_header": "header",
+            "credit_tiers": [{"tier_name": "default", "credits": 1, "input_limit": 0, "output_limit": 0, "reset_frequency": "monthly"}]
+        })),
+    )
+    .await;
+    assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(duplicate).await["error_code"], "CRD001");
+    let renamed = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/credit/True",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_credit_group": "renamed", "api_key": "key", "api_key_header": "header",
+            "credit_tiers": [{"tier_name": "default", "credits": 1, "input_limit": 0, "output_limit": 0, "reset_frequency": "monthly"}]
+        })),
+    )
+    .await;
+    assert_eq!(renamed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(renamed).await["error_code"], "CRD003");
+    let empty_key = platform_request(
+        &app,
+        Method::POST,
+        "/platform/credit",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_credit_group": "empty-key", "api_key": "", "api_key_header": "header",
+            "credit_tiers": [{"tier_name": "default", "credits": 1, "input_limit": 0, "output_limit": 0, "reset_frequency": "monthly"}]
+        })),
+    )
+    .await;
+    assert_eq!(empty_key.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(empty_key).await["error_code"], "CRD010");
+    let invalid_definition = platform_request(
+        &app,
+        Method::POST,
+        "/platform/credit",
+        Some(&cookie),
+        None,
+        Some(json!({"api_credit_group": "invalid", "api_key": "key", "api_key_header": "header", "credit_tiers": []})),
+    )
+    .await;
+    assert_eq!(
+        invalid_definition.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let user_credits = platform_request(
+        &app,
+        Method::POST,
+        "/platform/credit/admin",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "username": true,
+            "users_credits": {"True": {"tier_name": 2, "available_credits": "4", "user_api_key": false, "ignored": "field"}},
+            "ignored": "field"
+        })),
+    )
+    .await;
+    assert_eq!(user_credits.status(), StatusCode::OK);
+    let user_credits = storage
+        .find_one("user_credits", &json!({"username": "admin"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        user_credits["users_credits"]["True"],
+        json!({"tier_name": "2", "available_credits": 4, "user_api_key": "False"})
+    );
+    let invalid_user_credits = platform_request(
+        &app,
+        Method::POST,
+        "/platform/credit/admin",
+        Some(&cookie),
+        None,
+        Some(json!({"username": "admin", "users_credits": {"group": {"tier_name": "tier"}}})),
+    )
+    .await;
+    assert_eq!(
+        invalid_user_credits.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let missing_update = platform_request(
+        &app,
+        Method::PUT,
+        "/platform/credit/missing",
+        Some(&cookie),
+        None,
+        Some(json!({
+            "api_credit_group": "missing", "api_key": "key", "api_key_header": "header",
+            "credit_tiers": [{"tier_name": "default", "credits": 1, "input_limit": 0, "output_limit": 0, "reset_frequency": "monthly"}]
+        })),
+    )
+    .await;
+    assert_eq!(missing_update.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(missing_update).await["error_code"], "CRD004");
+    let missing_delete = platform_request(
+        &app,
+        Method::DELETE,
+        "/platform/credit/missing",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(missing_delete.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response_json(missing_delete).await["error_code"], "CRD007");
 }
 
 #[tokio::test]

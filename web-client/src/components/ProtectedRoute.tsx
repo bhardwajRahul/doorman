@@ -99,40 +99,36 @@ export function ProtectedRoute({
       'manage_gateway': 'Gateway Management',
       'manage_subscriptions': 'Subscription Management',
       'manage_security': 'Security Management',
+      'manage_credits': 'Credit Management',
+      'manage_tiers': 'Tier Management',
+      'manage_auth': 'Auth Administration',
+      'view_logs': 'System Logs',
+      'view_analytics': 'Analytics',
       'view_builder_tables': 'Tables'
     }
 
     const permissionName = permissionMessages[requiredPermission] || requiredPermission
 
     return fallback || (
-      <div className="min-h-screen bg-gray-50 dark:bg-dark-bg flex items-center justify-center">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 shadow-lg rounded-lg p-6">
-          <div className="text-center">
-            <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100 dark:bg-red-900 mb-4">
-              <svg className="h-6 w-6 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-              </svg>
+      <div className="min-h-screen bg-signal-warm flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white border-[3px] border-signal-ink shadow-[6px_6px_0px_0px_rgba(25,32,28,1)]">
+          <div className="px-5 py-3.5 border-b-[3px] border-signal-ink bg-signal-terra text-white flex items-center justify-between">
+            <span className="font-mono text-xs font-bold uppercase tracking-wider">Access Policy Violation</span>
+            <span className="font-mono text-xs font-extrabold">[ 403 ]</span>
+          </div>
+          <div className="p-6 text-center space-y-4">
+            <h2 className="text-2xl font-extrabold text-signal-ink tracking-tight">Access Denied</h2>
+            <p className="text-sm text-signal-mist">
+              Your account does not possess the required administrative privilege to view this resource.
+            </p>
+            <div className="p-2.5 bg-signal-warm border-2 border-signal-ink font-mono text-xs text-signal-ink">
+              Required: <span className="font-bold underline">{permissionName}</span>
             </div>
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
-              Access Denied
-            </h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-2">
-              You don't have permission to access this page.
-            </p>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-              Required permission: <span className="font-medium">{permissionName}</span>
-            </p>
-            <div className="flex gap-3 justify-center">
-              <button
-                onClick={() => router.back()}
-                className="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-              >
+            <div className="flex gap-3 justify-center pt-2">
+              <button onClick={() => router.back()} className="signal-button btn-secondary text-xs">
                 Go Back
               </button>
-              <button
-                onClick={() => router.push('/dashboard')}
-                className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-              >
+              <button onClick={() => router.push('/dashboard')} className="signal-button signal-button--primary text-xs">
                 Dashboard
               </button>
             </div>
