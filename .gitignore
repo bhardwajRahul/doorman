@@ -70,3 +70,4 @@ target/
 
 # Private, per-run release logs and reports
 release-evidence/
+system-e2e-evidence/

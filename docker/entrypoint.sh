@@ -34,7 +34,43 @@ for dir in /env /app/web-client /app; do
   fi
 done
 
-mkdir -p /app/data /app/logs
+_ensure_writable_directory() {
+  local target="$1"
+  local fallback="$2"
+  local env_var="$3"
+
+  mkdir -p "$target" 2>/dev/null || true
+  local probe="$target/.write_probe_$$"
+  if touch "$probe" 2>/dev/null; then
+    rm -f "$probe" 2>/dev/null || true
+  else
+    echo "[entrypoint] WARNING: Directory '$target' is not writable by user $(id -un 2>/dev/null || id -u) (UID $(id -u))."
+    echo "[entrypoint] WARNING: If upgrading from an older Doorman release, fix volume ownership:"
+    echo "[entrypoint] WARNING:   docker run --rm -v <volume-name>:/v alpine chown -R 10001:10001 /v"
+    if [ -n "$fallback" ]; then
+      echo "[entrypoint] Falling back $env_var to '$fallback' for this container session."
+      mkdir -p "$fallback" 2>/dev/null || true
+      export "$env_var=$fallback"
+    fi
+  fi
+}
+
+_ensure_writable_directory "${LOGS_DIR:-/app/logs}" "/tmp/logs" "LOGS_DIR"
+
+if ! touch /app/data/.write_probe_$$ 2>/dev/null; then
+  echo "[entrypoint] WARNING: Directory '/app/data' is not writable by user $(id -un 2>/dev/null || id -u) (UID $(id -u))."
+  mkdir -p /tmp/data 2>/dev/null || true
+  if [ "${MEM_DUMP_PATH:-}" = "/app/data/memory_dump.bin" ]; then
+    echo "[entrypoint] Falling back MEM_DUMP_PATH to '/tmp/data/memory_dump.bin'."
+    export MEM_DUMP_PATH="/tmp/data/memory_dump.bin"
+  fi
+  if [ "${SECURITY_SETTINGS_FILE:-}" = "/app/data/security_settings.json" ]; then
+    echo "[entrypoint] Falling back SECURITY_SETTINGS_FILE to '/tmp/data/security_settings.json'."
+    export SECURITY_SETTINGS_FILE="/tmp/data/security_settings.json"
+  fi
+else
+  rm -f /app/data/.write_probe_$$ 2>/dev/null || true
+fi
 
 stop_pid() {
   local pid="${1:-}"
@@ -59,7 +95,7 @@ RUST_PID=$!
 echo "[entrypoint] Starting Next.js web client on 0.0.0.0:${WEB_PORT:-3000}..."
 (
   cd /app/web-client
-  exec env PORT="${WEB_PORT:-3000}" npm run start -- -H 0.0.0.0 -p "${WEB_PORT:-3000}"
+  exec env PORT="${WEB_PORT:-3000}" npm run start -- -H "${WEB_HOST:-0.0.0.0}" -p "${WEB_PORT:-3000}"
 ) &
 WEB_PID=$!
 

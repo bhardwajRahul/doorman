@@ -6,7 +6,7 @@ ADMIN_PASSWORD ?= $(shell grep '^DOORMAN_ADMIN_PASSWORD=' .env 2>/dev/null | cut
 BASE_URL ?= http://localhost:$(PORT)
 GATEWAY_LOAD_BASE_URL ?= http://localhost:3001
 
-.PHONY: check test unit unitq rust-test rust-clippy rust-fmt-check web-build parity parity-reference parity-ledger parity-contracts parity-differential parity-performance release-check local-e2e test-e2e release-e2e e2e-plan test-live-tcp smoke preflight live liveq gateway-load external-storage-test clean clean-deep
+.PHONY: check test unit unitq rust-test rust-clippy rust-fmt-check web-audit web-build parity parity-reference parity-ledger parity-contracts parity-differential parity-performance release-check local-e2e test-e2e release-e2e e2e-plan system-e2e-smoke system-e2e system-e2e-soak system-e2e-plan system-e2e-check system-e2e-clean test-live-tcp smoke preflight live liveq gateway-load external-storage-test clean clean-deep
 
 check: rust-fmt-check rust-clippy test
 
@@ -50,6 +50,24 @@ release-e2e:
 e2e-plan:
 	python3 scripts/run_e2e.py --release --plan
 
+system-e2e-smoke:
+	python3 scripts/system_e2e.py --profile smoke
+
+system-e2e:
+	python3 scripts/system_e2e.py --profile comprehensive
+
+system-e2e-soak:
+	python3 scripts/system_e2e.py --profile soak
+
+system-e2e-plan:
+	python3 scripts/system_e2e.py --profile comprehensive --plan
+
+system-e2e-check:
+	python3 scripts/system_e2e.py --check
+
+system-e2e-clean:
+	python3 scripts/system_e2e.py --clean "$${SYSTEM_E2E_RUN_ID:?set SYSTEM_E2E_RUN_ID to the exact run ID}"
+
 test unit unitq rust-test:
 	cargo test --manifest-path gateway-rs/Cargo.toml --locked
 
@@ -62,6 +80,9 @@ rust-fmt-check:
 web-build:
 	npm --prefix web-client ci
 	npm --prefix web-client run build
+
+web-audit:
+	npm --prefix web-client audit --omit=dev --audit-level=high
 
 smoke preflight live liveq:
 	BASE_URL=$(BASE_URL) \

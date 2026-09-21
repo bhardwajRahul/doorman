@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.differential_parity import OPERATION_PROBE_PROFILE, load_openapi, operation_cases
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK = REPO_ROOT / "scripts" / "release_check.py"
@@ -22,13 +24,38 @@ class ReleaseCheckTests(unittest.TestCase):
         differential = evidence / "differential.json"
         scenario_path = REPO_ROOT / "parity" / "differential" / "scenarios.json"
         scenario_names = [case["name"] for case in json.loads(scenario_path.read_text())]
+        openapi_path = REPO_ROOT / "parity" / "openapi" / "python-openapi.json.gz.b64"
+        openapi_bytes, openapi_document = load_openapi(openapi_path)
+        operation_results = [
+            {
+                "name": case["name"],
+                "method": case["method"],
+                "path_template": case["path_template"],
+                "operation_id": case["operation_id"],
+                "probe_depth": "authenticated_synthetic_boundary",
+                "match": True,
+                "approved_divergence": None,
+            }
+            for case in operation_cases(openapi_document)
+        ]
+        approvals_path = REPO_ROOT / "parity" / "differential" / "operation_approvals.json"
         differential.write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "scenario_manifest_sha256": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
+                    "openapi_artifact_sha256": hashlib.sha256(openapi_bytes).hexdigest(),
+                    "operation_approvals_sha256": hashlib.sha256(
+                        approvals_path.read_bytes()
+                    ).hexdigest(),
+                    "probe_profile": OPERATION_PROBE_PROFILE,
                     "differences": 0,
                     "results": [{"name": name} for name in [*scenario_names, "openapi"]],
+                    "operation_matrix": {
+                        "operation_count": len(operation_results),
+                        "differences": 0,
+                        "results": operation_results,
+                    },
                 }
             )
         )
@@ -77,6 +104,36 @@ class ReleaseCheckTests(unittest.TestCase):
                 }
             )
         )
+        system_e2e = evidence / "system-e2e-report.json"
+        system_e2e.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "passed",
+                    "profile": "comprehensive",
+                    "candidate_image_id": "sha256:" + "a" * 64,
+                    "topologies": [
+                        {"name": "memory", "status": "passed"},
+                        {"name": "external", "status": "passed"},
+                        {"name": "two-node", "status": "passed"},
+                    ],
+                    "scenario_counts": {"planned": 10, "passed": 10, "failed": 0, "skipped": 0},
+                    "operation_coverage": {"total": 178, "covered": 178},
+                    "pair_coverage": {"valid": 10, "covered": 10},
+                    "ui_coverage": {"total": 10, "covered": 10},
+                    "failures": [],
+                    "infrastructure_errors": [],
+                    "manifest_hashes": {
+                        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in (
+                            REPO_ROOT / "system-tests/contract.json",
+                            REPO_ROOT / "system-tests/pairwise.json",
+                            REPO_ROOT / "system-tests/upstreams.json",
+                        )
+                    },
+                }
+            )
+        )
         return {
             **os.environ,
             "ENV": "production",
@@ -100,6 +157,7 @@ class ReleaseCheckTests(unittest.TestCase):
             "PARITY_PERF_REPORT": str(performance),
             "EXTERNAL_STORAGE_LOG": str(external_log),
             "RELEASE_OPERATIONS_REPORT": str(operations),
+            "SYSTEM_E2E_REPORT": str(system_e2e),
         }
 
     def run_check(self, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -171,6 +229,28 @@ class ReleaseCheckTests(unittest.TestCase):
                     environment = self.base_environment(Path(directory))
                     environment["DOORMAN_RELEASE_EVIDENCE_MAX_AGE_HOURS"] = str(invalid)
                     self.assertNotEqual(self.run_check(environment).returncode, 0)
+
+    def test_rejects_incomplete_operation_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = self.base_environment(Path(directory))
+            path = Path(environment["PARITY_REPORT"])
+            differential = json.loads(path.read_text())
+            differential["operation_matrix"]["results"].pop()
+            path.write_text(json.dumps(differential))
+            completed = self.run_check(environment)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("each pinned operation exactly once", completed.stderr)
+
+    def test_rejects_incomplete_system_e2e_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = self.base_environment(Path(directory))
+            path = Path(environment["SYSTEM_E2E_REPORT"])
+            report = json.loads(path.read_text())
+            report["scenario_counts"]["skipped"] = 1
+            path.write_text(json.dumps(report))
+            completed = self.run_check(environment)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("without skips", completed.stderr)
 
 
 if __name__ == "__main__":

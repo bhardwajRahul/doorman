@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Sequential local E2E checks, optionally followed by the full release gates.
 
-No production services are started or stopped. Release fixtures/rehearsals are
-explicit inputs, not silently skipped checks. See user-docs/TESTS.md.
+No production services are started or stopped. Release mode owns disposable
+Python/Rust fixtures and recovery-rehearsal resources. See user-docs/TESTS.md.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from pathlib import Path
 
 # Support both `python scripts/run_e2e.py` and unittest imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import benchmark_parity, release_check
+from scripts import release_check
+from scripts.release_fixtures import ReleaseFixtures, free_port
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,13 +34,15 @@ LOCAL_STAGES = (
     "Runner/checker regression tests",
     "Pinned Python reference and 600-entry coverage ledger",
     "Rust formatting, Clippy, and complete Cargo suite",
+    "Production frontend dependency audit",
     "Frontend dependency install and production build",
     "Isolated MongoDB/Redis integration tests (explicitly enabled)",
     "Candidate Docker image build",
     "Disposable image: backend readiness, frontend HTTP, and live TCP/auth test",
 )
 RELEASE_STAGES = (
-    "Operator-supplied isolated image/restore/cutover/rollback rehearsal command",
+    "Pinned Python image and deterministic protocol upstream fixture build",
+    "Isolated image/restore/cutover/rollback recovery rehearsal",
     "Python/Rust differential comparison",
     "REST/GraphQL/SOAP/gRPC performance comparison",
     "Production configuration and fresh release evidence validation",
@@ -76,30 +79,6 @@ def validate_release_inputs(env: dict[str, str]) -> None:
                           ("MONGO_DB_PASSWORD", 16), ("REDIS_PASSWORD", 16)):
         if len(env[name].strip()) < minimum:
             raise ValueError(f"{name} must be at least {minimum} characters")
-    for name in ("PYTHON_PARITY_URL", "RUST_PARITY_URL"):
-        if not env.get(name, "").startswith(("http://", "https://")):
-            raise ValueError(f"{name} must identify an isolated running fixture server")
-    if env["PYTHON_PARITY_URL"].rstrip("/") == env["RUST_PARITY_URL"].rstrip("/"):
-        raise ValueError("Python and Rust fixture URLs must differ")
-    for name in ("PYTHON_PARITY_PID", "RUST_PARITY_PID"):
-        if not env.get(name, "").isdigit() or benchmark_parity.rss_bytes(int(env[name])) <= 0:
-            raise ValueError(f"{name} must identify a running process visible in local /proc")
-    if env["PYTHON_PARITY_PID"] == env["RUST_PARITY_PID"]:
-        raise ValueError("Python and Rust fixture PIDs must differ")
-    path = Path(env.get("PARITY_PERF_SCENARIOS", ""))
-    if not path.is_file():
-        raise ValueError("PARITY_PERF_SCENARIOS must point to a seeded protocol scenario file")
-    values = json.loads(path.read_text())
-    if not isinstance(values, list):
-        raise ValueError("PARITY_PERF_SCENARIOS must contain a JSON array")
-    scenarios = [benchmark_parity.normalize_scenario(value) for value in values]
-    benchmark_parity.validate_scenarios(scenarios)
-    if {case["name"] for case in scenarios} != set(release_check.REQUIRED_PERFORMANCE_PROFILES):
-        raise ValueError("Performance scenarios must contain rest, graphql, soap, and grpc")
-    command = Path(env.get("RELEASE_OPERATIONS_COMMAND", ""))
-    if not command.is_file() or not os.access(command, os.X_OK):
-        raise ValueError("RELEASE_OPERATIONS_COMMAND must be an executable rehearsal script; "
-                         "see user-docs/OPERATIONS.md (there is no built-in deployment rehearsal)")
 
 
 def preflight(env: dict[str, str], release: bool) -> None:
@@ -126,8 +105,18 @@ class Runner:
                     "PARITY_REPORT": str(evidence / "differential.json"),
                     "PARITY_PERF_REPORT": str(evidence / "performance.json"),
                     "RELEASE_OPERATIONS_REPORT": str(evidence / "operations.json")}
+        generated_reports = {
+            name for name in release_check.REQUIRED_VALUES if name.endswith("REPORT")
+        } | {"EXTERNAL_STORAGE_LOG"}
+        release_configuration = set(release_check.REQUIRED_ENVIRONMENT) | (
+            set(release_check.REQUIRED_VALUES) - generated_reports
+        )
+        self.verification_env = {
+            key: value for key, value in self.env.items() if key not in release_configuration
+        }
         self.release = release
         self.container: str | None = None
+        self.fixtures: ReleaseFixtures | None = None
         self.image_id: str | None = None
         self.summary: dict = {"schema_version": 1, "mode": "release" if release else "tests",
                               "started_at": utc_now(), "status": "running", "stages": []}
@@ -179,14 +168,6 @@ class Runner:
             stage["finished_at"] = utc_now()
             self.save()
 
-    def docker_output(self, *args: str) -> str:
-        result = subprocess.run(["docker", *args], cwd=ROOT, env=self.env, text=True,
-                                capture_output=True, timeout=60)
-        if result.returncode:
-            # Avoid echoing inspect output, which may contain container secrets.
-            raise RuntimeError(f"docker {args[0]} failed; inspect the saved Docker logs")
-        return result.stdout.strip()
-
     def wait_http(self, url: str, expected_status: str | None = None) -> None:
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
@@ -204,7 +185,10 @@ class Runner:
     def candidate_smoke(self) -> None:
         assert self.image_id
         self.container = "doorman-e2e-" + secrets.token_hex(8)
-        local = {"ENV": "development", "HOST": "0.0.0.0", "PORT": "3001", "WEB_PORT": "3000",
+        api_port = free_port()
+        web_port = free_port()
+        local = {"ENV": "development", "HOST": "127.0.0.1", "WEB_HOST": "127.0.0.1",
+                 "PORT": str(api_port), "WEB_PORT": str(web_port),
                  "MEM_OR_EXTERNAL": "MEM", "THREADS": "1", "HTTPS_ONLY": "false",
                  "LOCAL_HOST_IP_BYPASS": "false", "CORS_STRICT": "true", "DEMO_SEED": "false",
                  "ALLOWED_ORIGINS": "http://localhost:3000", "JWT_SECRET_KEY": secrets.token_hex(32),
@@ -214,20 +198,15 @@ class Runner:
                  "DOORMAN_ADMIN_PASSWORD": "E2e!" + secrets.token_hex(24)}
         # Pass values through the subprocess environment, never CLI arguments/logs.
         command = ["docker", "run", "--detach", "--name", self.container,
-                   "--publish", "127.0.0.1::3001", "--publish", "127.0.0.1::3000"]
+                   "--network", "host"]
         for key in local:
             command.extend(["--env", key])
         self.run("candidate-start", [*command, self.image_id], {**self.env, **local})
-        api_binding = self.docker_output("port", self.container, "3001/tcp")
-        web_binding = self.docker_output("port", self.container, "3000/tcp")
-        for binding in (api_binding, web_binding):
-            if not re.fullmatch(r"127\.0\.0\.1:\d+", binding):
-                raise RuntimeError("Candidate must bind exclusively to a loopback port")
-        base = "http://" + api_binding
+        base = f"http://127.0.0.1:{api_port}"
         print("Waiting for disposable backend and frontend...", flush=True)
         self.wait_http(base + "/platform/monitor/liveness", "alive")
         self.wait_http(base + "/platform/monitor/readiness", "ready")
-        self.wait_http("http://" + web_binding)
+        self.wait_http(f"http://127.0.0.1:{web_port}")
         self.run("live-tcp", ["cargo", "test", "--manifest-path", "gateway-rs/Cargo.toml",
                               "--locked", "--test", "live_tcp_port_3001", "--", "--ignored", "--nocapture"],
                  {**self.env, **local, "LIVE_SERVER_URL": base})
@@ -236,27 +215,58 @@ class Runner:
         self.save()
 
     def cleanup(self) -> None:
-        if not self.container:
-            return
-        # Only remove the randomly named container created by this run. Never prune.
-        with (self.evidence / "candidate.log").open("w") as log:
-            subprocess.run(["docker", "logs", self.container], env=self.env,
-                           stdout=log, stderr=subprocess.STDOUT, timeout=30)
-        result = subprocess.run(["docker", "rm", "--force", self.container], env=self.env,
-                                capture_output=True, timeout=30)
-        if result.returncode:
-            raise RuntimeError(f"Could not clean up {self.container}; remove that container manually")
-        self.container = None
+        if self.fixtures:
+            self.fixtures.cleanup()
+            self.fixtures = None
+        if self.container:
+            # Only remove the randomly named container created by this run. Never prune.
+            with (self.evidence / "candidate.log").open("w") as log:
+                subprocess.run(["docker", "logs", self.container], env=self.env,
+                               stdout=log, stderr=subprocess.STDOUT, timeout=30)
+            result = subprocess.run(["docker", "rm", "--force", self.container], env=self.env,
+                                    capture_output=True, timeout=30)
+            if result.returncode:
+                raise RuntimeError(f"Could not clean up {self.container}; remove that container manually")
+            self.container = None
+
+    def start_release_fixtures(self) -> None:
+        assert self.image_id
+        stage = {"name": "release-fixtures", "status": "running",
+                 "log": "release-fixtures.log", "started_at": utc_now()}
+        self.summary["stages"].append(stage)
+        self.save()
+        try:
+            self.fixtures = ReleaseFixtures(self.evidence, self.image_id, self.env)
+            self.env.update(self.fixtures.start())
+            stage["status"] = "passed"
+        except BaseException:
+            stage["status"] = "failed"
+            raise
+        finally:
+            stage["finished_at"] = utc_now()
+            self.save()
 
     def execute(self) -> None:
-        self.run("source-state", ["git", "status", "--short"])
-        self.run("source-commit", ["git", "rev-parse", "HEAD"])
-        self.run("runner-tests", [sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"])
-        self.run("parity-inventory", ["make", "parity-reference", "parity-ledger"])
-        self.run("rust-checks", ["make", "check"])
-        self.run("frontend-build", ["make", "web-build"])
-        self.run("external-storage", ["bash", "scripts/run_external_storage_tests.sh"])
-        self.run("image-build", ["docker", "build", "--iidfile", str(self.evidence / "image-id.txt"), "."])
+        verification = self.verification_env
+        self.run("source-state", ["git", "status", "--short"], verification)
+        self.run("source-commit", ["git", "rev-parse", "HEAD"], verification)
+        self.run(
+            "runner-tests",
+            [sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"],
+            verification,
+        )
+        self.run("parity-inventory", ["make", "parity-reference", "parity-ledger"], verification)
+        self.run("rust-checks", ["make", "check"], verification)
+        self.run("frontend-audit", ["make", "web-audit"], verification)
+        self.run("frontend-build", ["make", "web-build"], verification)
+        self.run(
+            "external-storage", ["bash", "scripts/run_external_storage_tests.sh"], verification
+        )
+        self.run(
+            "image-build",
+            ["docker", "build", "--iidfile", str(self.evidence / "image-id.txt"), "."],
+            verification,
+        )
         self.image_id = (self.evidence / "image-id.txt").read_text().strip()
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_id):
             raise RuntimeError("Docker did not produce a valid immutable image ID")
@@ -267,7 +277,7 @@ class Runner:
         # Don't leave the local smoke server competing with benchmark processes.
         self.cleanup()
         if self.release:
-            self.run("operations-rehearsals", [str(Path(self.env["RELEASE_OPERATIONS_COMMAND"]).resolve())])
+            self.start_release_fixtures()
             operations = json.loads(Path(self.env["RELEASE_OPERATIONS_REPORT"]).read_text())
             if not isinstance(operations, dict) or operations.get("image_id") != self.image_id:
                 raise RuntimeError("Operational evidence must identify this run's RELEASE_IMAGE_ID")

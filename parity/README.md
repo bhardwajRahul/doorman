@@ -48,15 +48,34 @@ make parity-ledger
 pinned commit. The verification report includes counts by suite/domain and
 status, allowing incremental migration work to target a concrete gap.
 
-With the pinned Python server on port 3102 and Rust on port 3101, run the
-zero-difference public-wire comparison with:
+With the pinned Python server on port 3102 and Rust on port 3101, provide a fresh
+administrator token for each disposable fixture and run the differential comparison:
 
 ```bash
+PYTHON_PARITY_TOKEN='<python-token>' \
+RUST_PARITY_TOKEN='<rust-token>' \
 make parity-differential
 ```
 
 The differential runner exits non-zero for any unclassified difference and can
-write a machine-readable report through `PARITY_REPORT`.
+write a machine-readable report through `PARITY_REPORT`. The release fixture
+harness creates these tokens automatically and passes them only through the child
+environment.
+
+The report contains two evidence levels. The curated scenarios compare complete
+normalized responses for representative public, authentication, CORS, and OpenAPI
+behavior. The generated operation matrix reads the pinned OpenAPI artifact and sends
+one authenticated synthetic boundary request for each of its 178 method/path pairs.
+It compares exact status, response media type, and `Allow` methods. These probes use
+required path/query values and intentionally omit request bodies, so they cover route,
+authorization, validation, and missing-resource behavior; they do not claim a
+successful state transition for every operation. The four-protocol release fixtures
+provide deeper successful REST, GraphQL, SOAP, and gRPC coverage.
+
+Reviewed operation-level differences belong in
+`differential/operation_approvals.json` with a concrete rationale. Unknown and stale
+approvals fail, and the release evidence checker verifies hashes for the OpenAPI
+artifact and approval manifest plus exactly one result for every pinned operation.
 
 Contract comparison normalizes only volatile fields such as request IDs and
 timestamps. Meaningful wire headers, including compression, gRPC status/encoding,

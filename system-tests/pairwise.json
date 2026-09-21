@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "seed": 8675309,
+  "axes": {
+    "protocol_profile": ["rest-1", "rest-2", "graphql-1", "graphql-2", "soap-1", "soap-2", "grpc-1", "grpc-2", "grpc-web-1", "grpc-web-2"],
+    "storage": ["memory", "external", "two-node"],
+    "authentication": ["anonymous", "valid", "invalid", "optional"],
+    "role_permission": ["allowed", "denied"],
+    "group_eligibility": ["allowed", "wrong-group"],
+    "subscription": ["present", "absent"],
+    "api_mode": ["public", "optional", "private"],
+    "credit": ["disabled", "positive", "exhausted"],
+    "tier_quota": ["none", "available", "exhausted"],
+    "rate_limit": ["disabled", "available", "limited"],
+    "throttle": ["disabled", "delay", "queue-full"],
+    "bandwidth": ["disabled", "available", "exhausted"],
+    "ip_mode": ["disabled", "allow", "deny"],
+    "trusted_proxy": ["off", "trusted", "spoofed"],
+    "cors": ["none", "allowed", "denied", "credentials"],
+    "routing": ["api", "endpoint", "client"],
+    "resilience": ["none", "retry", "circuit-open", "half-open"],
+    "transformation": ["none", "request", "response", "both"],
+    "compression": ["off", "below-threshold", "gzip"],
+    "body_size": ["empty", "boundary", "oversized"],
+    "upstream": ["success", "retryable", "nonretryable", "timeout", "disconnect", "malformed"],
+    "active_state": ["active", "api-inactive", "endpoint-inactive"]
+  },
+  "forbidden_pairs": [
+    {"api_mode": "public", "authentication": "invalid"},
+    {"api_mode": "private", "authentication": "anonymous"},
+    {"api_mode": "private", "authentication": "optional"},
+    {"api_mode": "optional", "authentication": "invalid"},
+    {"trusted_proxy": "off", "ip_mode": "deny"},
+    {"active_state": "api-inactive", "upstream": "success"},
+    {"active_state": "endpoint-inactive", "upstream": "success"},
+    {"resilience": "half-open", "upstream": "nonretryable"}
+  ]
+}

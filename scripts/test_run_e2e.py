@@ -20,45 +20,19 @@ IMAGE = "sha256:" + "a" * 64
 
 class E2ERunnerTests(unittest.TestCase):
     def release_environment(self, directory: Path) -> dict[str, str]:
-        command = directory / "rehearse.sh"
-        command.write_text("#!/bin/sh\nexit 1\n")
-        command.chmod(0o700)
-        scenarios = directory / "scenarios.json"
-        scenarios.write_text(json.dumps([
-            {"name": name, "python_url": "http://localhost:3102/" + name,
-             "rust_url": "http://localhost:3101/" + name}
-            for name in ("rest", "graphql", "soap", "grpc")
-        ]))
         return {
             **{key: sorted(values)[0] for key, values in run_e2e.release_check.REQUIRED_ENVIRONMENT.items()},
             **{key: "long-non-placeholder-value-1234567890" for key in run_e2e.release_check.REQUIRED_VALUES},
-            "PYTHON_PARITY_URL": "http://localhost:3102", "RUST_PARITY_URL": "http://localhost:3101",
-            "PYTHON_PARITY_PID": "123", "RUST_PARITY_PID": "456",
-            "PARITY_PERF_SCENARIOS": str(scenarios), "RELEASE_OPERATIONS_COMMAND": str(command),
         }
 
-    def test_release_preflight_rejects_missing_hook_and_profiles(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, patch.object(run_e2e.benchmark_parity, "rss_bytes", return_value=10):
+    def test_release_preflight_requires_production_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
             env = self.release_environment(Path(directory))
             run_e2e.validate_release_inputs(env)
-            with self.assertRaisesRegex(ValueError, "RELEASE_OPERATIONS_COMMAND"):
-                run_e2e.validate_release_inputs({**env, "RELEASE_OPERATIONS_COMMAND": ""})
-            with self.assertRaisesRegex(ValueError, "must differ"):
-                run_e2e.validate_release_inputs({**env, "RUST_PARITY_PID": "123"})
-            with self.assertRaisesRegex(ValueError, "must differ"):
-                run_e2e.validate_release_inputs({**env, "RUST_PARITY_URL": "http://localhost:3102/"})
             with self.assertRaisesRegex(ValueError, "JWT_SECRET_KEY"):
                 run_e2e.validate_release_inputs({**env, "JWT_SECRET_KEY": "too-short"})
-            path = Path(env["PARITY_PERF_SCENARIOS"])
-            scenarios = json.loads(path.read_text())
-            path.write_text(json.dumps(scenarios[:1]))
-            with self.assertRaisesRegex(ValueError, "rest, graphql, soap, and grpc"):
-                run_e2e.validate_release_inputs(env)
-
-    def test_release_preflight_rejects_dead_pids(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, patch.object(run_e2e.benchmark_parity, "rss_bytes", return_value=0):
-            with self.assertRaisesRegex(ValueError, "PYTHON_PARITY_PID"):
-                run_e2e.validate_release_inputs(self.release_environment(Path(directory)))
+            with self.assertRaisesRegex(ValueError, "ENV"):
+                run_e2e.validate_release_inputs({**env, "ENV": "development"})
 
     def test_command_failure_keeps_log_and_status_without_dumping_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -90,20 +64,42 @@ class E2ERunnerTests(unittest.TestCase):
             runner = run_e2e.Runner(Path(directory), {"DOORMAN_ADMIN_PASSWORD": "user-secret"}, False)
             runner.image_id = IMAGE
             with patch.object(runner, "run") as run, \
-                 patch.object(runner, "docker_output", side_effect=["127.0.0.1:43210", "127.0.0.1:43211"]), \
+                 patch.object(run_e2e, "free_port", side_effect=[43210, 43211]), \
                  patch.object(runner, "wait_http"):
                 runner.candidate_smoke()
             start = run.call_args_list[0]
             self.assertEqual(start.args[1][-1], IMAGE)
             self.assertNotIn("--volume", start.args[1])
             self.assertNotIn("--mount", start.args[1])
-            self.assertIn("127.0.0.1::3001", start.args[1])
+            self.assertIn("host", start.args[1])
+            self.assertEqual(start.args[2]["HOST"], "127.0.0.1")
+            self.assertEqual(start.args[2]["WEB_HOST"], "127.0.0.1")
+            self.assertEqual(start.args[2]["PORT"], "43210")
+            self.assertEqual(start.args[2]["WEB_PORT"], "43211")
             self.assertNotEqual(start.args[2]["DOORMAN_ADMIN_PASSWORD"], "user-secret")
             self.assertEqual(start.args[2]["MEM_OR_EXTERNAL"], "MEM")
             self.assertNotIn(start.args[2]["DOORMAN_ADMIN_PASSWORD"], start.args[1])
             live = run.call_args_list[1]
             self.assertIn("--ignored", live.args[1])
             self.assertEqual(live.args[2]["LIVE_SERVER_URL"], "http://127.0.0.1:43210")
+
+    def test_release_configuration_is_not_inherited_by_build_and_test_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runner = run_e2e.Runner(
+                Path(directory),
+                {
+                    "PATH": os.environ.get("PATH", ""),
+                    "ENV": "production",
+                    "ALLOWED_ORIGINS": "https://console.example.test",
+                    "JWT_SECRET_KEY": "release-secret",
+                    "UNRELATED": "preserved",
+                },
+                True,
+            )
+            self.assertNotIn("ENV", runner.verification_env)
+            self.assertNotIn("ALLOWED_ORIGINS", runner.verification_env)
+            self.assertNotIn("JWT_SECRET_KEY", runner.verification_env)
+            self.assertEqual(runner.verification_env["UNRELATED"], "preserved")
 
     def fake_run(self, runner: run_e2e.Runner, calls: list[str], *, wrong_image: bool = False, errors: float = 0):
         def run(name, command, env=None):
@@ -129,27 +125,38 @@ class E2ERunnerTests(unittest.TestCase):
                  patch.object(runner, "candidate_smoke") as smoke, patch.object(runner, "cleanup"):
                 runner.execute()
             self.assertEqual(calls, ["source-state", "source-commit", "runner-tests", "parity-inventory",
-                                     "rust-checks", "frontend-build", "external-storage", "image-build"])
+                                     "rust-checks", "frontend-audit", "frontend-build",
+                                     "external-storage", "image-build"])
             smoke.assert_called_once()
             self.assertEqual(runner.summary["mode"], "tests")
             self.assertEqual(runner.env["RELEASE_IMAGE_ID"], IMAGE)
 
     def test_full_release_runs_every_gate_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            runner = run_e2e.Runner(Path(directory), {"RELEASE_OPERATIONS_COMMAND": "/test/hook"}, True)
+            runner = run_e2e.Runner(Path(directory), {}, True)
             calls = []
+            def fixtures():
+                (runner.evidence / "operations.json").write_text(json.dumps({"image_id": IMAGE}))
+                runner.env["RELEASE_OPERATIONS_REPORT"] = str(runner.evidence / "operations.json")
             with patch.object(runner, "run", side_effect=self.fake_run(runner, calls)), \
-                 patch.object(runner, "candidate_smoke"), patch.object(runner, "cleanup"):
+                 patch.object(runner, "candidate_smoke"), patch.object(runner, "cleanup"), \
+                 patch.object(runner, "start_release_fixtures", side_effect=fixtures):
                 runner.execute()
-            self.assertEqual(calls[-4:], ["operations-rehearsals", "differential", "performance", "release-check"])
+            self.assertEqual(calls[-3:], ["differential", "performance", "release-check"])
 
     def test_release_rejects_another_image_or_equally_broken_benchmarks(self) -> None:
         for wrong_image, errors, message in [(True, 0, "RELEASE_IMAGE_ID"), (False, 1, "successful requests")]:
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
-                runner = run_e2e.Runner(Path(directory), {"RELEASE_OPERATIONS_COMMAND": "/test/hook"}, True)
+                runner = run_e2e.Runner(Path(directory), {}, True)
                 calls = []
+                def fixtures():
+                    (runner.evidence / "operations.json").write_text(json.dumps({
+                        "image_id": "wrong" if wrong_image else IMAGE,
+                    }))
+                    runner.env["RELEASE_OPERATIONS_REPORT"] = str(runner.evidence / "operations.json")
                 with patch.object(runner, "run", side_effect=self.fake_run(runner, calls, wrong_image=wrong_image, errors=errors)), \
-                     patch.object(runner, "candidate_smoke"), patch.object(runner, "cleanup"):
+                     patch.object(runner, "candidate_smoke"), patch.object(runner, "cleanup"), \
+                     patch.object(runner, "start_release_fixtures", side_effect=fixtures):
                     with self.assertRaisesRegex(RuntimeError, message):
                         runner.execute()
                 self.assertNotIn("release-check", calls)

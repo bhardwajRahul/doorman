@@ -8,7 +8,7 @@ RUN --mount=type=cache,id=doorman-cargo-registry,target=/usr/local/cargo/registr
     cargo build --locked --release \
     && cp target/release/doorman-gateway /build/doorman-gateway
 
-FROM node:20-bookworm-slim AS web-builder
+FROM node:22-bookworm-slim AS web-builder
 WORKDIR /app/web-client
 COPY web-client/package*.json ./
 RUN npm ci --include=dev
@@ -21,7 +21,7 @@ RUN NEXT_PUBLIC_PROTECTED_USERS="$NEXT_PUBLIC_PROTECTED_USERS" \
     npm run build \
     && npm prune --omit=dev
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libprotobuf-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*

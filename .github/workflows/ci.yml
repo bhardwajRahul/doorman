@@ -36,8 +36,8 @@ jobs:
           python3 scripts/check_parity_reference.py
       - name: Verify Python-to-Rust test coverage ledger
         run: python3 scripts/generate_test_coverage_ledger.py --check
-      - name: Test release-evidence checker
-        run: python3 -m unittest scripts/test_release_check.py scripts/test_benchmark_parity.py
+      - name: Test release tooling
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Run Clippy
         run: cargo clippy --manifest-path gateway-rs/Cargo.toml --locked --all-targets --all-features -- -D warnings
       - name: Run tests
@@ -48,15 +48,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Use Node.js 20
+      - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: web-client/package-lock.json
       - name: Install dependencies
         working-directory: web-client
         run: npm ci
+      - name: Audit production dependencies
+        working-directory: web-client
+        run: npm audit --omit=dev --audit-level=high
       - name: Build web client
         working-directory: web-client
         env:
