@@ -27,6 +27,14 @@ mod common;
 static VAULT_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static METRICS_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static PAGINATION_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static TRACE_CAPTURE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+async fn trace_capture_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    TRACE_CAPTURE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
 
 struct EnvVarRestore(Vec<(&'static str, Option<OsString>)>);
 
@@ -2257,6 +2265,7 @@ async fn global_localhost_bypass_disabled_blocks_without_forwarding_headers() {
 
 #[tokio::test]
 async fn global_ip_denial_emits_the_python_audit_action() {
+    let _trace_guard = trace_capture_guard().await;
     let app = build_router(
         state_with_security_settings(json!({
             "trust_x_forwarded_for": true,
@@ -2293,6 +2302,7 @@ async fn global_ip_denial_emits_the_python_audit_action() {
 
 #[tokio::test]
 async fn global_ip_denial_audit_never_logs_raw_forwarded_header_values() {
+    let _trace_guard = trace_capture_guard().await;
     let app = build_router(
         state_with_security_settings(json!({
             "trust_x_forwarded_for": true,
@@ -5773,6 +5783,7 @@ async fn python_config_import_ignores_malformed_entries() {
 
 #[tokio::test]
 async fn api_create_update_delete_emit_named_audit_events() {
+    let _trace_guard = trace_capture_guard().await;
     let app = build_router(memory_state(false).await);
     let (cookie, _) = login(&app).await;
     let capture = CapturedTrace::default();
@@ -5826,6 +5837,7 @@ async fn api_create_update_delete_emit_named_audit_events() {
 
 #[tokio::test]
 async fn python_config_export_emits_audit_event() {
+    let _trace_guard = trace_capture_guard().await;
     let app = build_router(memory_state(false).await);
     let (cookie, _) = login(&app).await;
     let capture = CapturedTrace::default();
@@ -5856,6 +5868,7 @@ async fn python_config_export_emits_audit_event() {
 
 #[tokio::test]
 async fn platform_mutations_emit_payload_free_audit_events() {
+    let _trace_guard = trace_capture_guard().await;
     let app = build_router(memory_state(false).await);
     let (cookie, _) = login(&app).await;
     let capture = CapturedTrace::default();

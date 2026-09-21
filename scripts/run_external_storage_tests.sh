@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 project="doorman-external-test-$$"
+: "${DOORMAN_TEST_MONGO_PORT:=$((27018 + ($$ % 10000)))}"
+: "${DOORMAN_TEST_REDIS_PORT:=$((16379 + ($$ % 10000)))}"
+export DOORMAN_TEST_MONGO_PORT DOORMAN_TEST_REDIS_PORT
 compose=(docker compose --project-name "$project" --file "$repo_root/docker-compose.test.yml")
 
 cleanup() {
@@ -38,8 +41,8 @@ fi
 external_test=(
   env
   DOORMAN_EXTERNAL_STORAGE_TEST=1
-  "DOORMAN_TEST_MONGO_PORT=${DOORMAN_TEST_MONGO_PORT:-27018}"
-  "DOORMAN_TEST_REDIS_PORT=${DOORMAN_TEST_REDIS_PORT:-16379}"
+  "DOORMAN_TEST_MONGO_PORT=$DOORMAN_TEST_MONGO_PORT"
+  "DOORMAN_TEST_REDIS_PORT=$DOORMAN_TEST_REDIS_PORT"
   "${cargo_runner[@]}"
   test
   --manifest-path gateway-rs/Cargo.toml

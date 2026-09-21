@@ -88,6 +88,19 @@ Notes
 
 Release Candidate Runbook
 -------------------------
+- `make release-e2e` automates the isolated image smoke, encrypted snapshot restore,
+  Python-to-Rust compatibility cutover, Rust-to-Python rollback, curated differential
+  cases, an authenticated synthetic boundary probe for all 178 pinned OpenAPI
+  operations, and the four-protocol benchmark described below. It records immutable
+  image and pinned Python identities plus per-container logs under a private evidence
+  directory.
+- The automated rehearsal changes its disposable data volume to the Rust image's
+  `10001:10001` runtime ownership before cutover. Apply the equivalent ownership
+  migration to persistent deployment volumes before starting the non-root Rust container:
+  `docker run --rm -v doorman-logs:/logs -v doorman-generated:/data alpine chown -R 10001:10001 /logs /data`
+  If this step is omitted, the container entrypoint will emit a diagnostic warning
+  and temporarily fall back `LOGS_DIR` and unseeded dump paths to `/tmp` so the
+  service does not fail readiness checks with permission denials.
 - V2 launch assumption: fresh deployment, with no existing v1 users. Every user
   must log in to v2. Python-issued sessions are not supported; do not disable
   issuer/audience validation or enable a legacy-token bypass. A live Python

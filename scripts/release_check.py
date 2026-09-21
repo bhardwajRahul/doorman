@@ -11,11 +11,14 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+from differential_parity import OPERATION_PROBE_PROFILE, load_openapi, operation_cases
 
 
 REQUIRED_ENVIRONMENT = {
@@ -42,6 +45,7 @@ REQUIRED_VALUES = (
     "PARITY_PERF_REPORT",
     "EXTERNAL_STORAGE_LOG",
     "RELEASE_OPERATIONS_REPORT",
+    "SYSTEM_E2E_REPORT",
 )
 PLACEHOLDERS = {"", "please-change-me", "changeme", "change-me", "example", "todo"}
 REQUIRED_PERFORMANCE_PROFILES = ("rest", "graphql", "soap", "grpc")
@@ -99,8 +103,8 @@ def load_report(name: str) -> dict[str, Any]:
 
 def validate_reports() -> None:
     differential = load_report("PARITY_REPORT")
-    if differential.get("differences") != 0 or not isinstance(differential.get("results"), list):
-        fail("PARITY_REPORT must contain zero unapproved differences and a results list")
+    if not isinstance(differential.get("results"), list):
+        fail("PARITY_REPORT must contain a curated results list")
     scenario_path = Path(__file__).resolve().parents[1] / "parity/differential/scenarios.json"
     expected_hash = hashlib.sha256(scenario_path.read_bytes()).hexdigest()
     if differential.get("scenario_manifest_sha256") != expected_hash:
@@ -113,6 +117,66 @@ def validate_reports() -> None:
     }
     if actual_scenarios != expected_scenarios:
         fail("PARITY_REPORT must contain one result for every differential scenario")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    openapi_path = repo_root / "parity/openapi/python-openapi.json.gz.b64"
+    openapi_bytes, openapi_document = load_openapi(openapi_path)
+    if differential.get("openapi_artifact_sha256") != hashlib.sha256(openapi_bytes).hexdigest():
+        fail("PARITY_REPORT must be generated from the checked-in OpenAPI artifact")
+    approvals_path = repo_root / "parity/differential/operation_approvals.json"
+    approval_bytes = approvals_path.read_bytes()
+    try:
+        approvals = json.loads(approval_bytes)
+    except json.JSONDecodeError as error:
+        fail(f"operation approval manifest is not valid JSON: {error}")
+    if not isinstance(approvals, dict):
+        fail("operation approval manifest must be an object")
+    if differential.get("operation_approvals_sha256") != hashlib.sha256(approval_bytes).hexdigest():
+        fail("PARITY_REPORT must use the checked-in operation approval manifest")
+    if differential.get("probe_profile") != OPERATION_PROBE_PROFILE:
+        fail("PARITY_REPORT must use the authenticated operation probe profile")
+    matrix = differential.get("operation_matrix")
+    matrix_results = matrix.get("results") if isinstance(matrix, dict) else None
+    expected_operations = {case["name"]: case for case in operation_cases(openapi_document)}
+    expected_count = json.loads((repo_root / "parity/reference.json").read_text())["surface"][
+        "openapi_operations"
+    ]
+    if expected_count != len(expected_operations):
+        fail("checked-in OpenAPI operation count does not match parity/reference.json")
+    if not isinstance(matrix_results, list) or matrix.get("operation_count") != expected_count:
+        fail("PARITY_REPORT operation matrix must cover every pinned operation")
+    if matrix.get("differences") != 0:
+        fail(
+            "PARITY_REPORT operation matrix contains "
+            f"{matrix.get('differences')} unapproved differences"
+        )
+    actual_operations = [
+        result.get("name") for result in matrix_results if isinstance(result, dict)
+    ]
+    if len(actual_operations) != expected_count or set(actual_operations) != set(expected_operations):
+        fail("PARITY_REPORT operation matrix must contain each pinned operation exactly once")
+    for result in matrix_results:
+        expected = expected_operations[result["name"]]
+        if (
+            result.get("method") != expected["method"]
+            or result.get("path_template") != expected["path_template"]
+            or result.get("operation_id") != expected["operation_id"]
+            or result.get("probe_depth") != "authenticated_synthetic_boundary"
+            or not isinstance(result.get("match"), bool)
+        ):
+            fail(f"PARITY_REPORT has invalid operation evidence for {result['name']}")
+        expected_approval = approvals.get(result["name"])
+        if result.get("approved_divergence") != expected_approval:
+            fail(f"PARITY_REPORT has unreviewed approval metadata for {result['name']}")
+        if result["match"] and expected_approval:
+            fail(f"operation approval is stale because the probe now matches: {result['name']}")
+        if not result["match"] and not expected_approval:
+            fail(f"PARITY_REPORT contains an unapproved operation difference: {result['name']}")
+    if differential.get("differences") != 0:
+        fail(
+            "PARITY_REPORT contains "
+            f"{differential.get('differences')} total unapproved differences"
+        )
 
     performance = load_report("PARITY_PERF_REPORT")
     profiles = performance.get("profiles")
@@ -184,6 +248,54 @@ def validate_reports() -> None:
                 "RELEASE_OPERATIONS_REPORT must record a passing "
                 f"{operation} rehearsal"
             )
+
+    system = load_report("SYSTEM_E2E_REPORT")
+    if system.get("profile") != "comprehensive" or system.get("status") != "passed":
+        fail("SYSTEM_E2E_REPORT must be a passing comprehensive report")
+    topologies = system.get("topologies")
+    expected_topologies = ["memory", "external", "two-node"]
+    if (
+        not isinstance(topologies, list)
+        or not all(isinstance(item, dict) for item in topologies)
+        or [item.get("name") for item in topologies] != expected_topologies
+        or any(item.get("status") != "passed" for item in topologies)
+    ):
+        fail("SYSTEM_E2E_REPORT must contain memory, external, and two-node evidence")
+    counts = system.get("scenario_counts")
+    if (
+        not isinstance(counts, dict)
+        or counts.get("planned") != counts.get("passed")
+        or counts.get("failed") != 0
+        or counts.get("skipped") != 0
+    ):
+        fail("SYSTEM_E2E_REPORT must pass every planned scenario without skips")
+    operation_coverage = system.get("operation_coverage")
+    if (
+        not isinstance(operation_coverage, dict)
+        or operation_coverage.get("total") != 178
+        or operation_coverage.get("covered") != operation_coverage.get("total")
+    ):
+        fail("SYSTEM_E2E_REPORT must cover all 178 frozen operations")
+    for name in ("pair_coverage", "ui_coverage"):
+        coverage = system.get(name)
+        total_key = "valid" if name == "pair_coverage" else "total"
+        if not isinstance(coverage, dict) or coverage.get("covered") != coverage.get(total_key):
+            fail(f"SYSTEM_E2E_REPORT has incomplete {name}")
+    if system.get("failures") != [] or system.get("infrastructure_errors") != []:
+        fail("SYSTEM_E2E_REPORT contains failures or infrastructure errors")
+    image_id = system.get("candidate_image_id")
+    if not isinstance(image_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        fail("SYSTEM_E2E_REPORT must identify the immutable candidate image")
+    expected_manifests = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (
+            repo_root / "system-tests/contract.json",
+            repo_root / "system-tests/pairwise.json",
+            repo_root / "system-tests/upstreams.json",
+        )
+    }
+    if system.get("manifest_hashes") != expected_manifests:
+        fail("SYSTEM_E2E_REPORT was not generated from the current system-test manifests")
 
 
 def run_generated_checks(repo_root: Path) -> None:

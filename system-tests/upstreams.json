@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {"id": "rest-1", "protocol": "rest", "standard": "OpenAPI 3.1"},
+    {"id": "rest-2", "protocol": "rest", "standard": "Swagger 2.0"},
+    {"id": "graphql-1", "protocol": "graphql", "standard": "GraphQL over HTTP"},
+    {"id": "graphql-2", "protocol": "graphql", "standard": "restricted GraphQL"},
+    {"id": "soap-1", "protocol": "soap", "standard": "SOAP 1.1 document/literal"},
+    {"id": "soap-2", "protocol": "soap", "standard": "SOAP 1.2 WS-Security"},
+    {"id": "grpc-1", "protocol": "grpc", "standard": "uploaded descriptors"},
+    {"id": "grpc-2", "protocol": "grpc", "standard": "server reflection"},
+    {"id": "grpc-web-1", "protocol": "grpc-web", "standard": "binary grpc-web"},
+    {"id": "grpc-web-2", "protocol": "grpc-web", "standard": "text grpc-web"}
+  ]
+}

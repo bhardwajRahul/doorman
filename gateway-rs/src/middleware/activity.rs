@@ -189,29 +189,39 @@ pub async fn track_active_requests(
             ip_address: direct_ip,
         };
         if let Err(error) = append_record(logs_dir, "doorman.log.rust", &record).await {
-            state
+            let was_healthy = state
                 .runtime
                 .activity_log_healthy
-                .store(false, Ordering::Relaxed);
-            tracing::warn!(error = %error, "failed to append gateway activity log");
+                .swap(false, Ordering::Relaxed);
+            if was_healthy {
+                tracing::warn!(error = %error, "failed to append gateway activity log");
+            }
         } else {
-            state
+            let was_healthy = state
                 .runtime
                 .activity_log_healthy
-                .store(true, Ordering::Relaxed);
+                .swap(true, Ordering::Relaxed);
+            if !was_healthy {
+                tracing::info!("gateway activity log writing restored");
+            }
         }
         if status == 401 || status == 403 || status == 429 || status >= 500 {
             if let Err(error) = append_record(logs_dir, "doorman-trail.log.rust", &record).await {
-                state
+                let was_healthy = state
                     .runtime
                     .security_audit_log_healthy
-                    .store(false, Ordering::Relaxed);
-                tracing::warn!(error = %error, "failed to append gateway audit log");
+                    .swap(false, Ordering::Relaxed);
+                if was_healthy {
+                    tracing::warn!(error = %error, "failed to append gateway audit log");
+                }
             } else {
-                state
+                let was_healthy = state
                     .runtime
                     .security_audit_log_healthy
-                    .store(true, Ordering::Relaxed);
+                    .swap(true, Ordering::Relaxed);
+                if !was_healthy {
+                    tracing::info!("gateway audit log writing restored");
+                }
             }
         }
     }

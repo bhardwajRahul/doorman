@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Docker and Docker Compose, or Rust 1.88 and Node 20+
+- Docker and Docker Compose, or Rust 1.88 and Node 22
 - Optional: Redis and MongoDB (production)
 
 ## Quick Start

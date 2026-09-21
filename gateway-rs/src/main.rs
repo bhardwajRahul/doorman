@@ -267,6 +267,10 @@ async fn shutdown_signal() {
 fn metrics_paths() -> [PathBuf; 2] {
     let directory = env::var_os("LOGS_DIR")
         .map(PathBuf::from)
+        .or_else(|| {
+            let path = PathBuf::from("/app/logs");
+            path.is_dir().then_some(path)
+        })
         .unwrap_or_else(|| PathBuf::from("platform-logs"));
     [
         directory.join("enhanced_metrics.json"),

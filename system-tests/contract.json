@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "frozen_openapi_operations": 178,
+  "operation_classes": [
+    "success",
+    "lifecycle",
+    "anonymous",
+    "authenticated",
+    "expired_token",
+    "malformed_token",
+    "wrong_issuer",
+    "wrong_audience",
+    "revoked_token",
+    "invalidated_token",
+    "disabled_user",
+    "missing_permission",
+    "wrong_group",
+    "subscription_present",
+    "subscription_absent",
+    "missing_body",
+    "malformed_body",
+    "wrong_content_type",
+    "wrong_scalar_type",
+    "boundary_value",
+    "unknown_field",
+    "oversized_body",
+    "missing_resource",
+    "duplicate_resource",
+    "conflict",
+    "idempotent_repeat",
+    "invalid_transition",
+    "unsupported_method",
+    "incorrect_path",
+    "invalid_query",
+    "missing_header",
+    "memory_storage",
+    "external_storage",
+    "cross_node"
+  ],
+  "not_applicable_rules": [
+    {
+      "classes": ["missing_body", "malformed_body", "wrong_content_type", "wrong_scalar_type", "unknown_field", "oversized_body"],
+      "methods": ["GET", "HEAD", "DELETE", "OPTIONS"],
+      "rationale": "The operation has no request entity in the frozen OpenAPI contract."
+    },
+    {
+      "classes": ["lifecycle", "duplicate_resource", "conflict", "idempotent_repeat", "invalid_transition"],
+      "methods": ["GET", "HEAD", "OPTIONS"],
+      "rationale": "The read-only operation cannot independently mutate a resource lifecycle."
+    },
+    {
+      "classes": ["subscription_present", "subscription_absent"],
+      "path_prefixes": ["/platform", "/docs", "/openapi.json"],
+      "rationale": "Control-plane and documentation routes do not evaluate gateway subscriptions."
+    }
+  ],
+  "runtime_settings": [
+    "ALLOWED_ORIGINS", "ALLOW_CREDENTIALS", "ALLOW_HEADERS", "ALLOW_METHODS",
+    "AUTH_EXPIRE_TIME", "AUTH_EXPIRE_TIME_FREQ", "AUTH_REFRESH_EXPIRE_TIME",
+    "AUTH_REFRESH_EXPIRE_FREQ", "BODY_LIMIT_EXCLUDE_PATHS", "CIRCUIT_BREAKER_ENABLED",
+    "CIRCUIT_BREAKER_THRESHOLD", "CIRCUIT_BREAKER_TIMEOUT", "COOKIE_DOMAIN",
+    "COOKIE_SAMESITE", "COOKIE_SECURE", "CORS_STRICT", "DISABLE_BODY_SIZE_LIMIT",
+    "DISCOVERY_ALLOWED_HOSTS", "DOORMAN_ENABLE_GRPC_REFLECTION", "ENFORCE_ADMIN_SUBSCRIPTION",
+    "GATEWAY_TIMEOUT", "GRPC_RETRY_BASE_MS", "GRPC_RETRY_MAX_MS", "HTTP_CONNECT_TIMEOUT",
+    "HTTP_READ_TIMEOUT", "HTTP_RETRY_BASE_DELAY", "HTTP_RETRY_MAX_DELAY", "JWT_AUDIENCE",
+    "JWT_ISSUER", "JWT_KEYS", "JWT_SECRET_KEY", "LOCAL_HOST_IP_BYPASS", "MAX_BODY_SIZE_BYTES",
+    "MAX_BODY_SIZE_BYTES_GRAPHQL", "MAX_BODY_SIZE_BYTES_GRPC", "MAX_BODY_SIZE_BYTES_REST",
+    "MAX_BODY_SIZE_BYTES_SOAP", "MAX_PAGE_SIZE", "MAX_PROTO_SIZE_BYTES", "MEM_AUTO_SAVE_ENABLED",
+    "MEM_AUTO_SAVE_FREQ", "MEM_DUMP_PATH", "MEM_ENCRYPTION_KEY", "MEM_OR_EXTERNAL",
+    "METRICS_SAVE_INTERVAL", "RETRY_BACKOFF", "RETRY_ENABLED", "RETRY_MAX_ATTEMPTS",
+    "STRICT_OPTIONS_405", "THREADS", "VAULT_KEY"
+  ],
+  "feature_packs": [
+    "private-role-group-subscription-credits",
+    "optional-anonymous-ip-rate-limit",
+    "public-cors-header-response-transform",
+    "routing-override-round-robin-retry-circuit",
+    "tier-rate-throttle-bandwidth",
+    "two-node-policy-membership-revocation",
+    "openapi-import-mutation-hot-traffic",
+    "soap-wssecurity-ip-cors-fault",
+    "graphql-depth-variables-partial-error",
+    "grpc-reflection-allowlist-metadata-retry",
+    "grpc-web-text-cors-trailer-envelope",
+    "snapshot-concurrent-restart-restore",
+    "redis-outage-cached-auth-recovery",
+    "mongo-stepdown-concurrent-writes",
+    "secret-data-logging-export-redaction"
+  ],
+  "expected_dashboard_routes": 50,
+  "dashboard_routes_sha256": "5ed913fa0571809cfad5facf00c809ca773c7f9c89e99d519ef2b3b034a06be3",
+  "approved_differences": []
+}

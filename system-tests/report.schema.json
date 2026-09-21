@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doorman.invalid/system-e2e-report.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "profile", "run_id", "source_commit", "dirty_state_digest", "candidate_image_id", "fixture_image_ids", "manifest_hashes", "random_seed", "topologies", "timings", "scenario_counts", "operation_coverage", "pair_coverage", "ui_coverage", "failures", "infrastructure_errors", "approved_differences", "artifacts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["running", "passed", "failed", "interrupted"]},
+    "profile": {"enum": ["smoke", "comprehensive", "soak"]},
+    "run_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "dirty_state_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "candidate_image_id": {"type": "string"},
+    "fixture_image_ids": {"type": "object"},
+    "manifest_hashes": {"type": "object"},
+    "random_seed": {"type": "integer"},
+    "topologies": {"type": "array"},
+    "timings": {"type": "object"},
+    "scenario_counts": {"type": "object"},
+    "operation_coverage": {"type": "object"},
+    "pair_coverage": {"type": "object"},
+    "ui_coverage": {"type": "object"},
+    "failures": {"type": "array"},
+    "infrastructure_errors": {"type": "array"},
+    "approved_differences": {"type": "array"},
+    "artifacts": {"type": "object"}
+  },
+  "additionalProperties": true
+}
